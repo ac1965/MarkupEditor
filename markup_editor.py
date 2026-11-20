@@ -13,6 +13,10 @@ import os
 import re
 import sys
 import time
+
+# macOS 標準 Tk の非推奨警告を抑える（tkinter の import より前に設定する）
+os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
+
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
