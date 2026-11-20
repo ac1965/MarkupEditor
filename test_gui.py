@@ -252,6 +252,69 @@ class GuiTest(unittest.TestCase):
         self.assertEqual([c.args[0] for c in opened.call_args_list],
                          ["https://e.com", "mailto:a@b.co"])
 
+    # --- プレビューのフォント -------------------------------------
+    def font_family_at(self, word):
+        pv = self.app.pv
+        index = pv.search(word, "1.0")
+        for tag in pv.tag_names(index):
+            if tag in self.app.fonts:
+                return self.app.fonts[tag].cget("family")
+        self.fail("%r にフォントのタグが無い" % word)
+
+    def other_family(self):
+        default = m.tkfont.nametofont("TkDefaultFont").actual("family")
+        return next(f for f in self.app.font_families() if f != default)
+
+    def test_preview_font_applies_to_body_but_not_code(self):
+        app = self.app
+        fam = self.other_family()
+        app.set_text("# Head\n\nbody `code`\n")
+        self.assertTrue(app.set_preview_font(fam))
+        self.assertEqual(self.font_family_at("body"), fam)
+        self.assertEqual(self.font_family_at("Head"), fam)
+        self.assertNotEqual(self.font_family_at("code"), fam)  # 等幅のまま
+
+    def test_preview_font_reset_and_invalid(self):
+        app = self.app
+        fam = self.other_family()
+        app.set_text("body")
+        app.set_preview_font(fam)
+        self.assertFalse(app.set_preview_font("No Such Font 12345"))
+        self.assertEqual(app.pv_family, fam)  # 変わらない
+        self.assertTrue(app.set_preview_font(""))
+        default = m.tkfont.nametofont("TkDefaultFont").actual("family")
+        self.assertEqual(self.font_family_at("body"), default)
+
+    def test_preview_font_is_saved_and_unknown_font_is_ignored(self):
+        app = self.app
+        fam = self.other_family()
+        app.set_preview_font(fam)
+        app.write_state()
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.assertEqual(self.new_app().pv_family, fam)
+        self.state.write_text('{"preview_font": "No Such Font 12345"}',
+                              encoding="utf-8")
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.assertEqual(self.new_app().pv_family, "")
+
+    def test_font_dialog_selects_and_resets(self):
+        app = self.app
+        win = app.open_font_dialog()
+        self.root.update()
+        self.assertIs(app.open_font_dialog(), win)  # 二重に開かない
+        lb = win.listbox
+        self.assertGreater(lb.size(), 0)
+        lb.selection_clear(0, "end")
+        lb.selection_set(0)
+        lb.event_generate("<<ListboxSelect>>")
+        self.root.update()
+        self.assertEqual(app.pv_family, lb.get(0))
+        app.set_preview_font("")
+        self.assertEqual(app.pv_family, "")
+        win.destroy()
+
     # --- 設定の保存 -----------------------------------------------
     def test_state_roundtrip_restores_draft_and_theme(self):
         app = self.app

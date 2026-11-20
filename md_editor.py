@@ -305,6 +305,11 @@ class App:
             value=state.get("mode") if state.get("mode") in
             ("split", "editor", "preview") else "split")
         self.theme_var = tk.StringVar(value=self.theme)
+        # プレビューの本文のフォント。空なら標準。この PC に無いフォントは使わない
+        self.pv_family = str(state.get("preview_font") or "")
+        if self.pv_family not in ("", *self.font_families()):
+            self.pv_family = ""
+        self.font_dialog = None
 
         self.build_ui()
         self.apply_theme()
@@ -336,7 +341,8 @@ class App:
         self.cancel_job(self.save_job)  # 直接呼ばれても、予約済みの保存を残さない
         self.save_job = None
         state = dict(theme=self.theme, size=self.size,
-                     mode=self.mode_var.get())
+                     mode=self.mode_var.get(),
+                     preview_font=self.pv_family)
         if self.dirty or self.path is None:
             state["draft"] = dict(text=self.ed.get("1.0", "end-1c"),
                                   name=self.name,
@@ -427,6 +433,8 @@ class App:
                       command=lambda: self.zoom(1))
         v.add_command(label="文字を小さく", accelerator=mod + "-",
                       command=lambda: self.zoom(-1))
+        v.add_command(label="プレビューのフォント…",
+                      command=self.open_font_dialog)
         bar.add_cascade(label="表示", menu=v)
         self.root.config(menu=bar)
 
@@ -473,14 +481,91 @@ class App:
         self.made_tags.clear()
         self.fonts.clear()
 
+    # --- プレビューのフォント -------------------------------------
+    def font_families(self):
+        """この PC で使える本文向けのフォント名（縦書き用の '@' 付きは除く）。"""
+        return sorted({f for f in tkfont.families(self.root)
+                       if not f.startswith("@")}, key=str.casefold)
+
+    def set_preview_font(self, family):
+        """family が空なら標準に戻す。使えないフォント名は受け付けない。"""
+        if family and family not in self.font_families():
+            return False
+        self.pv_family = family
+        self.fonts.clear()
+        self.made_tags.clear()
+        self.render()
+        self.schedule_save()
+        return True
+
+    def open_font_dialog(self):
+        """フォントを選ぶ小さなウィンドウ。選んだ時点でプレビューに反映する。"""
+        if self.font_dialog and self.font_dialog.winfo_exists():
+            self.font_dialog.lift()
+            return self.font_dialog
+        win = tk.Toplevel(self.root)
+        win.title("プレビューのフォント")
+        win.transient(self.root)
+        win.geometry("340x420")
+        self.font_dialog = win
+        families = self.font_families()
+        query = tk.StringVar()
+        ttk.Label(win, text="フォント名で絞り込み", padding=(10, 8, 10, 2)
+                  ).pack(anchor="w")
+        entry = ttk.Entry(win, textvariable=query)
+        entry.pack(fill="x", padx=10)
+        box = ttk.Frame(win)
+        box.pack(fill="both", expand=True, padx=10, pady=8)
+        sb = ttk.Scrollbar(box)
+        lb = tk.Listbox(box, exportselection=False, activestyle="none",
+                        yscrollcommand=sb.set)
+        sb.configure(command=lb.yview)
+        sb.pack(side="right", fill="y")
+        lb.pack(side="left", fill="both", expand=True)
+        win.listbox = lb  # テストから触れるようにする
+
+        def fill(*_):
+            q = query.get().strip().casefold()
+            lb.delete(0, "end")
+            shown = [f for f in families if q in f.casefold()]
+            for f in shown:
+                lb.insert("end", f)
+            if self.pv_family in shown:
+                i = shown.index(self.pv_family)
+                lb.selection_set(i)
+                lb.see(i)
+
+        def choose(_event=None):
+            sel = lb.curselection()
+            if sel:
+                self.set_preview_font(lb.get(sel[0]))
+
+        def reset():
+            self.set_preview_font("")
+            lb.selection_clear(0, "end")
+
+        query.trace_add("write", fill)
+        lb.bind("<<ListboxSelect>>", choose)
+        buttons = ttk.Frame(win)
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="標準に戻す", command=reset).pack(side="left")
+        ttk.Button(buttons, text="閉じる", command=win.destroy
+                   ).pack(side="right")
+        fill()
+        entry.focus_set()
+        return win
+
     # --- プレビュー用タグ -----------------------------------------
     def font_tag(self, fixed, heading, bold, italic):
         name = "f%d%d%d%d" % (fixed, heading, bold, italic)
         if name not in self.made_tags:
             base = tkfont.nametofont("TkFixedFont" if fixed
                                      else "TkDefaultFont")
+            # 選んだフォントは本文用。コードは常に等幅フォントのまま
+            family = (self.pv_family if self.pv_family and not fixed
+                      else base.actual("family"))
             size = max(8, round(self.size * HEADING_SCALE.get(heading, 1.0)))
-            f = tkfont.Font(family=base.actual("family"), size=size,
+            f = tkfont.Font(family=family, size=size,
                             weight="bold" if bold else "normal",
                             slant="italic" if italic else "roman")
             self.fonts[name] = f
