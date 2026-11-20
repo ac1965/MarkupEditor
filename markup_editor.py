@@ -208,8 +208,10 @@ class Renderer(HTMLParser):
             self.write("\n")
         elif tag == "input":
             self.write("☑ " if "checked" in a else "☐ ")
-        elif tag == "img":
-            self.write("[画像: %s] " % (a.get("alt") or ""))
+        elif tag == "img":  # 画像は描かない。代替テキスト、無ければファイル名を出す
+            name = a.get("alt") or re.split(
+                r"[?#]", a.get("src") or "")[0].rstrip("/").rsplit("/", 1)[-1]
+            self.write("[画像: %s] " % name if name else "[画像] ")
         elif tag == "table":
             self.ensure_blank()
             self.table = dict(rows=[], row=None, cell=None, align="left")
@@ -289,9 +291,10 @@ class Renderer(HTMLParser):
         gap = 28
         text_w = [max((bold if n == 0 else reg).measure(r[c][0])
                       for n, r in enumerate(rows)) for c in range(cols)]
-        stops, x = [], 6
+        stops, starts, x = [], [], 6
         for c in range(cols):
             align = rows[0][c][1]
+            starts.append(x)
             if align == "right":
                 stops += [x + text_w[c], "right"]
             elif align == "center":
@@ -299,7 +302,15 @@ class Renderer(HTMLParser):
             else:
                 stops += [x, "left"]
             x += text_w[c] + gap
-        tag = app.table_tag(stops)
+        # 長い文字が折り返したとき、最後の列の左端にそろえる（表の左端に戻らない）。
+        # ただし、ペインの半分までにする（前の列が長いとき、本文が細くなりすぎない）
+        indent = starts[-1]
+        avail = self.w.winfo_width() - 40
+        if avail > 0:
+            indent = min(indent, avail // 2)
+        # 余白のタグを先に作る（後から作られたタグが、折り返しの字下げを上書きしないように）
+        app.margin_tag(self.quote, len(self.lists))
+        tag = app.table_tag(stops, indent)
         for n, r in enumerate(rows):
             if n == 0:
                 self.bold += 1
@@ -630,10 +641,12 @@ class App:
             self.made_tags.add(name)
         return name
 
-    def table_tag(self, stops):
+    def table_tag(self, stops, indent=0):
+        """表の行のタグ。stops は列の位置（タブ位置）、indent は折り返した行の字下げ。"""
         self.table_n = getattr(self, "table_n", 0) + 1
         name = "tbl%d" % self.table_n
-        self.pv.tag_configure(name, tabs=tuple(stops), spacing1=2, spacing3=2)
+        self.pv.tag_configure(name, tabs=tuple(stops), spacing1=2, spacing3=2,
+                              lmargin2=indent)
         self.link_tags.append(name)  # 描画のたびに link と一緒に削除する
         return name
 

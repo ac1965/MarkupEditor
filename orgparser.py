@@ -6,7 +6,7 @@
 対応する書き方:
   見出し（* の数が階層、TODO / DONE、行末の :tag:）、段落、
   *太字* /斜体/ _下線_ +取り消し+ =逐語= ~コード~、
-  リンク [[URL][説明]] [[URL]]（画像の URL は画像）、素の http(s) URL、
+  リンク [[URL][説明]] [[URL]]（画像の URL は画像で、代替テキストはファイル名）、素の http(s) URL、
   リスト（- + *、1. 1)、入れ子、[ ] [X] のチェックボックス）、
   #+BEGIN_SRC / #+BEGIN_EXAMPLE / #+BEGIN_QUOTE / #+BEGIN_COMMENT、
   表（|---+---| の区切り行）、水平線（-----）、#+TITLE:、行頭の # のコメント、
@@ -53,6 +53,14 @@ _HOLD = re.compile(r"\x00(\d+)\x00")
 _A = ' target="_blank" rel="noopener noreferrer"'
 
 
+def _file_name(url):
+    """画像の URL（エスケープ済み）から、ファイル名だけを取り出す。
+    file: と、:: 以降（検索の指定）と、? 以降（クエリ）を除き、最後の / のあとを使う。"""
+    name = re.sub(r"^file:", "", url)
+    name = re.split(r"::|\?|#", name)[0]
+    return name.rstrip("/").rsplit("/", 1)[-1]
+
+
 def _marks(s):
     for rx, rep in _MARKS:
         s = rx.sub(rep, s)
@@ -79,8 +87,9 @@ def _inline(s, fn=None):
 
     def link1(m):
         u = m.group(1)
-        if _IMG.search(u):
-            return hold('<img alt="" src="' + safe_url(u) + '">')
+        if _IMG.search(u):  # Org の画像には代替テキストが無いので、ファイル名を使う
+            return hold('<img alt="' + _file_name(u) + '" src="' + safe_url(u)
+                        + '">')
         return hold('<a href="' + safe_url(u) + '"' + _A + ">" + u + "</a>")
 
     s = _LINK1.sub(link1, s)

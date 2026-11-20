@@ -361,6 +361,50 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(lines[0], "\t左\t右")
         self.assertEqual(lines[2], "\tあ\t12345")
 
+    def test_image_placeholder_shows_a_name(self):
+        app = self.app
+        cases = (("a.org", "[[file:svg/tangle-flow.svg]]", "[画像: tangle-flow.svg]"),
+                 ("a.md", "![図の説明](img/x.png)", "[画像: 図の説明]"),
+                 ("a.md", "![](img/photo.png?size=2)", "[画像: photo.png]"),
+                 ("a.md", "![](javascript:alert(1))", "[画像] "))
+        for name, text, shown in cases:
+            app.name = name
+            app.set_text(text)
+            app.render()
+            self.assertIn(shown, self.preview(), text)
+
+    def test_table_wrapped_lines_are_indented_to_the_last_column(self):
+        app = self.app
+        self.root.geometry("700x500")
+        app.set_text("| 表記 | 意味 |\n|---|---|\n| a | " + "あ" * 90 + " |\n")
+        app.render()
+        pump(self.root, 300)
+        pv = app.pv
+        row = "3.0"  # 見出し行、罫線、データ行の順
+        wrapped = pv.index(row + " +1 displaylines")
+        self.assertEqual(wrapped.split(".")[0], "3")  # 折り返して、同じ行の続き
+        self.assertNotEqual(wrapped, row)
+        left = pv.bbox(row)[0]
+        # 折り返した行の頭は、表の左端ではなく、最後の列の位置にある
+        self.assertGreater(pv.bbox(wrapped)[0] - left, 40)
+        # 後から作られたタグに、字下げを上書きされていない（優先順位が表のタグのほうが上）
+        tags = pv.tag_names(row)
+        table = next(t for t in tags if t.startswith("tbl"))
+        margin = next(t for t in tags if t.startswith("m"))
+        self.assertGreater(tags.index(table), tags.index(margin))
+
+    def test_table_indent_is_capped_to_half_of_the_pane(self):
+        app = self.app
+        self.root.geometry("700x500")
+        long_first = "あ" * 60
+        app.set_text("| %s | 意味 |\n|---|---|\n| a | b |\n" % long_first)
+        app.render()
+        pump(self.root, 300)
+        table = next(t for t in app.pv.tag_names("1.0") if t.startswith("tbl"))
+        avail = app.pv.winfo_width() - 40
+        self.assertLessEqual(int(float(app.pv.tag_cget(table, "lmargin2"))),
+                             avail // 2)
+
     def test_links_open_only_safe_schemes(self):
         with mock.patch.object(m.webbrowser, "open") as opened:
             for url in ("#", "javascript:alert(1)", "file:///etc/passwd",

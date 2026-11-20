@@ -61,7 +61,7 @@ class Inline(unittest.TestCase):
         self.assertIn('>https://e.com/a</a>', h)
 
     def test_image_link(self):
-        self.assertIn('<img alt="" src="./a.png">', o("[[./a.png]]"))
+        self.assertIn('<img alt="a.png" src="./a.png">', o("[[./a.png]]"))
 
     def test_bare_url_trims_punctuation(self):
         h = o("see https://e.com/a. next")
@@ -72,6 +72,26 @@ class Inline(unittest.TestCase):
 
     def test_code_marker_inside_url_query(self):
         self.assertNotIn("<code>", o("https://e.com/?a=1&b=2"))
+
+
+class ImageNames(unittest.TestCase):
+    def test_alt_is_the_file_name(self):
+        for link, alt in (("[[file:svg/tangle-flow.svg]]", "tangle-flow.svg"),
+                          ("[[./a.png]]", "a.png"),
+                          ("[[file:demo.png]]", "demo.png"),
+                          ("[[https://e.com/img/logo.PNG]]", "logo.PNG")):
+            self.assertIn('alt="%s"' % alt, o(link), link)
+
+    def test_alt_is_escaped_and_never_leaks_a_path(self):
+        h = o("[[file:a/<b>.png]]")
+        self.assertIn('alt="&lt;b&gt;.png"', h)
+        self.assertNotIn("<b>", h)
+        self.assertNotIn("a/", h.split('alt="')[1].split('"')[0])
+
+    def test_dangerous_image_url_keeps_src_neutralised(self):
+        h = o("[[javascript:alert(1)//a.png]]")
+        self.assertIn('src="#"', h)
+        self.assertNotIn("javascript", h)
 
 
 class Security(unittest.TestCase):
