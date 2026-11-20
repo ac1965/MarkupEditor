@@ -7,6 +7,14 @@ Python の標準ライブラリ（tkinter）だけで動く Markdown エディ�
 python md_editor.py [ファイル.md]
 ```
 
+## 画面
+
+左のエディタで書くと、右のプレビューにすぐ反映される。見出し・強調・リスト・引用・表・コードブロックを描き分ける。
+
+| ライト | ダーク |
+|---|---|
+| ![ライトテーマ](docs/screenshot-light.png) | ![ダークテーマ](docs/screenshot-dark.png) |
+
 ## 要件
 
 - Python 3.8 以上（tkinter を含むもの）。Windows と macOS の公式配布版には入っている。
