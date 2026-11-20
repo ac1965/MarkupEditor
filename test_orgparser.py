@@ -159,7 +159,7 @@ class Blocks(unittest.TestCase):
                          "<p>本文</p>")
 
     def test_unknown_block_directives_are_dropped_but_body_is_kept(self):
-        self.assertEqual(o("#+BEGIN_EXAMPLE\nbody\n#+END_EXAMPLE"),
+        self.assertEqual(o("#+BEGIN_EXPORT html\nbody\n#+END_EXPORT"),
                          "<p>body</p>")
 
     def test_src_block_inside_list_item(self):
@@ -206,6 +206,136 @@ class Blocks(unittest.TestCase):
             self.assertIn(part, h)
 
 
+class Planning(unittest.TestCase):
+    def test_scheduled_and_deadline_lines(self):
+        self.assertEqual(
+            o("SCHEDULED: <2024-05-01 Wed> DEADLINE: <2024-05-10 Fri>"),
+            '<p><span class="tag">SCHEDULED: &lt;2024-05-01 Wed&gt; '
+            "DEADLINE: &lt;2024-05-10 Fri&gt;</span></p>")
+
+    def test_closed_with_inactive_timestamp(self):
+        self.assertIn("CLOSED: [2024-05-01 Wed 10:00]",
+                      o("CLOSED: [2024-05-01 Wed 10:00]"))
+
+    def test_planning_after_heading_is_not_part_of_a_paragraph(self):
+        h = o("* TODO 提出\nDEADLINE: <2024-05-10 Fri>\n本文")
+        self.assertEqual(h.count("<p>"), 2)
+        self.assertIn("<p>本文</p>", h)
+
+    def test_ordinary_text_with_the_word_is_not_planning(self):
+        self.assertNotIn("span", o("DEADLINE: 来週まで"))
+        self.assertNotIn("span", o("DEADLINE: <not a date>> x"))
+
+    def test_planning_text_is_escaped(self):
+        self.assertNotIn("<script>", o("SCHEDULED: <2024><script>"))
+
+
+class Drawers(unittest.TestCase):
+    def test_properties_drawer_is_hidden(self):
+        self.assertEqual(
+            o("* 見出し\n:PROPERTIES:\n:ID: abc\n:CUSTOM_ID: x\n:END:\n本文"),
+            "<h1>見出し</h1>\n<p>本文</p>")
+
+    def test_drawer_names_are_case_insensitive(self):
+        self.assertEqual(o(":properties:\n:ID: a\n:end:"), "")
+
+    def test_other_drawer_shows_only_its_content(self):
+        self.assertEqual(
+            o(":LOGBOOK:\n- State DONE\n:END:"),
+            "<ul><li>State DONE</li></ul>")
+
+    def test_drawer_interrupts_a_paragraph(self):
+        self.assertEqual(o("前\n:LOGBOOK:\n中\n:END:\n後"),
+                         "<p>前</p>\n<p>中</p>\n<p>後</p>")
+
+    def test_unclosed_drawer_is_plain_text(self):
+        self.assertEqual(o(":LOGBOOK:\n中身"), "<p>:LOGBOOK:\n中身</p>")
+
+    def test_drawer_does_not_cross_a_heading(self):
+        self.assertEqual(o(":FOO:\n* 見出し\n:END:"),
+                         "<p>:FOO:</p>\n<h1>見出し</h1>\n<p>:END:</p>")
+
+    def test_stray_end_and_tag_like_lines_are_text(self):
+        self.assertEqual(o(":END:"), "<p>:END:</p>")
+        self.assertEqual(o(":foo:\n普通の文"), "<p>:foo:\n普通の文</p>")
+
+    def test_drawer_content_is_escaped(self):
+        self.assertIn("&lt;script&gt;", o(":FOO:\n<script>\n:END:"))
+
+
+class Example(unittest.TestCase):
+    def test_example_block_is_verbatim(self):
+        self.assertEqual(
+            o("#+BEGIN_EXAMPLE\n*生* [[x]] <b>\n#+END_EXAMPLE"),
+            "<pre><code>*生* [[x]] &lt;b&gt;</code></pre>")
+
+    def test_example_block_in_list_item(self):
+        h = o("- a\n  #+BEGIN_EXAMPLE\n  出力\n  #+END_EXAMPLE")
+        self.assertIn("<li>a<pre><code>出力</code></pre></li>", h)
+
+
+class Footnotes(unittest.TestCase):
+    def test_reference_and_definition(self):
+        h = o("本文[fn:1]です。\n\n[fn:1] 補足 *強調*")
+        self.assertIn("<p>本文<sup>1</sup>です。</p>", h)
+        self.assertTrue(h.endswith(
+            '<hr>\n<div class="footnotes"><p><sup>1</sup> 補足 '
+            "<strong>強調</strong></p></div>"))
+
+    def test_numbered_by_first_reference_not_by_definition(self):
+        h = o("[fn:b] 二番目に定義\n[fn:a] 一番目に定義\n\n"
+              "先に a [fn:a]、次に b [fn:b]、また a [fn:a]")
+        self.assertIn("先に a <sup>1</sup>、次に b <sup>2</sup>、また a "
+                      "<sup>1</sup>", h)
+        self.assertLess(h.index("<sup>1</sup> 一番目に定義"),
+                        h.index("<sup>2</sup> 二番目に定義"))
+
+    def test_unreferenced_definition_is_not_shown(self):
+        self.assertEqual(o("本文\n\n[fn:x] 使わない"), "<p>本文</p>")
+
+    def test_undefined_reference_stays_as_text(self):
+        self.assertEqual(o("本文 [fn:zzz]"), "<p>本文 [fn:zzz]</p>")
+
+    def test_definition_continues_until_blank_line(self):
+        h = o("参照[fn:1]\n\n[fn:1] 一行目\n  二行目\n\n次の段落")
+        self.assertIn("<sup>1</sup> 一行目 二行目</p>", h)
+        self.assertIn("<p>次の段落</p>", h)
+
+    def test_definition_stops_at_heading_and_next_definition(self):
+        h = o("a[fn:1] b[fn:2]\n[fn:1] 一\n[fn:2] 二\n* 見出し")
+        self.assertIn("<p><sup>1</sup> 一</p><p><sup>2</sup> 二</p>", h)
+        self.assertIn("<h1>見出し</h1>", h)
+
+    def test_reference_in_heading_list_and_table(self):
+        h = o("* 見出し[fn:1]\n- 項目[fn:1]\n| 表[fn:1] |\n\n[fn:1] 脚注")
+        self.assertEqual(h.count("<sup>1</sup>"), 4)  # 3 つの参照と、定義の番号
+
+    def test_footnotes_inside_code_blocks_are_not_interpreted(self):
+        h = o("#+BEGIN_SRC org\n[fn:1] 定義っぽい\n[fn:1]\n#+END_SRC\n\n"
+              "本文[fn:1]\n\n[fn:1] 本物")
+        self.assertIn("[fn:1] 定義っぽい\n[fn:1]</code>", h)
+        self.assertIn("<p>本文<sup>1</sup></p>", h)
+        self.assertIn("<sup>1</sup> 本物", h)
+
+    def test_definition_must_start_at_column_zero(self):
+        self.assertNotIn("footnotes", o("参照[fn:1]\n\n  [fn:1] 字下げ"))
+
+    def test_footnote_text_is_escaped(self):
+        h = o("a[fn:1]\n\n[fn:1] <script>alert(1)</script> [[javascript:x][y]]")
+        self.assertNotIn("<script>", h)
+        self.assertNotIn("javascript", h)
+
+    def test_reference_inside_footnote_uses_the_same_numbers(self):
+        h = o("a[fn:1]\n\n[fn:1] 見よ[fn:2]\n[fn:2] 二")
+        self.assertIn("<sup>1</sup> 見よ<sup>2</sup>", h)
+        self.assertIn("<p><sup>2</sup> 二</p>", h)
+
+    def test_circular_footnotes_terminate(self):
+        h = o("a[fn:1]\n\n[fn:1] 見よ[fn:2]\n[fn:2] 戻る[fn:1]")
+        self.assertIn("<sup>1</sup> 見よ<sup>2</sup>", h)
+        self.assertIn("<sup>2</sup> 戻る<sup>1</sup>", h)
+
+
 class Limits(unittest.TestCase):
     def test_unclosed_markers_stay_fast(self):
         for src in ("*a " * 16000, "+a " * 16000, "/a " * 16000,
@@ -213,6 +343,17 @@ class Limits(unittest.TestCase):
             t0 = time.perf_counter()
             o(src)
             self.assertLess(time.perf_counter() - t0, 3.0, src[:6])
+
+    def test_drawers_footnotes_and_planning_stay_fast(self):
+        n = 20000
+        for src in (":a:\n" * n, ":a:\n:END:\n" * (n // 2), ":PROPERTIES:\n" * n,
+                    "[fn:1] x\n" * n, "SCHEDULED: <2024-01-01 Mon>\n" * n,
+                    "DEADLINE: <" * n,
+                    "".join("[fn:%d] 見よ[fn:%d]\n" % (i, i + 1)
+                            for i in range(5000)) + "本文[fn:0]"):
+            t0 = time.perf_counter()
+            o(src)
+            self.assertLess(time.perf_counter() - t0, 3.0, src[:12])
 
     def test_unclosed_brackets_stay_fast(self):
         for src in ("[[" * 20000, "[[a" * 20000, "[" * 20000):

@@ -72,6 +72,13 @@ class GuiTest(unittest.TestCase):
             app.cancel_jobs()
         self.tmp.cleanup()
 
+    def reset_widgets(self):
+        """アプリを作り直す前に、古いアプリのタイマーを止めて、画面部品を破棄する。"""
+        for app in self.apps:
+            app.cancel_jobs()
+        for w in self.root.winfo_children():
+            w.destroy()
+
     def new_app(self, path=None):
         app = m.App(self.root, path, state_path=self.state)
         self.apps.append(app)
@@ -226,6 +233,34 @@ class GuiTest(unittest.TestCase):
         self.assertIn("quote", pv.tag_names(tag))  # 目立たない色
         self.assertNotIn("quote", pv.tag_names(pv.search("買う", "1.0")))
 
+    def test_footnote_numbers_are_raised_and_planning_is_muted(self):
+        app = self.app
+        app.name = "a.org"
+        app.set_text("* TODO 提出\nDEADLINE: <2024-05-10 Fri>\n"
+                     "本文[fn:1]です。\n\n[fn:1] 補足\n")
+        app.render()
+        pv = app.pv
+        text = self.preview()
+        self.assertIn("本文1です。", text)  # 参照は番号に置き換わる
+        self.assertNotIn("[fn:1]", text)
+        self.assertIn("1 補足", text)
+        # 番号は上付き（offset）で、目立たない色
+        sup = pv.tag_names(pv.search("1", pv.search("本文", "1.0")))
+        self.assertIn("sup", sup)
+        self.assertGreater(int(float(pv.tag_cget("sup", "offset"))), 0)
+        self.assertIn("quote", sup)
+        # 予定の行は目立たない色。本文は通常の色
+        plan = pv.search("DEADLINE", "1.0")
+        self.assertIn("quote", pv.tag_names(plan))
+        self.assertNotIn("quote", pv.tag_names(pv.search("です", "1.0")))
+
+    def test_properties_drawer_is_not_shown_in_preview(self):
+        app = self.app
+        app.name = "a.org"
+        app.set_text("* 見出し\n:PROPERTIES:\n:ID: abc123\n:END:\n本文\n")
+        app.render()
+        self.assertEqual(self.preview(), "見出し\n\n本文\n")
+
     def test_export_is_disabled_for_org_and_blocked_by_shortcut(self):
         app = self.app
         with mock.patch.object(m.messagebox, "showinfo") as info:
@@ -372,13 +407,11 @@ class GuiTest(unittest.TestCase):
         fam = self.other_family()
         app.set_preview_font(fam)
         app.write_state()
-        for w in self.root.winfo_children():
-            w.destroy()
+        self.reset_widgets()
         self.assertEqual(self.new_app().pv_family, fam)
         self.state.write_text('{"preview_font": "No Such Font 12345"}',
                               encoding="utf-8")
-        for w in self.root.winfo_children():
-            w.destroy()
+        self.reset_widgets()
         self.assertEqual(self.new_app().pv_family, "")
 
     def test_font_dialog_selects_and_resets(self):
@@ -406,8 +439,7 @@ class GuiTest(unittest.TestCase):
         app.theme_var.set("dark")
         app.set_theme()
         app.write_state()
-        for w in self.root.winfo_children():
-            w.destroy()
+        self.reset_widgets()
         app2 = self.new_app()
         self.assertEqual(app2.theme, "dark")
         self.assertEqual(app2.ed.get("1.0", "end-1c"), "draft!")
@@ -425,8 +457,7 @@ class GuiTest(unittest.TestCase):
         old.write_text('{"theme": "dark", "size": 14}', encoding="utf-8")
         with mock.patch.object(m.Path, "home", return_value=home):
             self.assertEqual(m.default_state_path(), new)
-            for w in self.root.winfo_children():
-                w.destroy()
+            self.reset_widgets()
             app = m.App(self.root)  # state_path を渡さない = 実際の保存先
             self.apps.append(app)
             self.root.update()
@@ -439,8 +470,7 @@ class GuiTest(unittest.TestCase):
             self.assertIn('"dark"', old.read_text(encoding="utf-8"))
             # 新しい保存先ができたら、そちらを優先する
             new.write_text('{"theme": "light", "size": 10}', encoding="utf-8")
-            for w in self.root.winfo_children():
-                w.destroy()
+            self.reset_widgets()
             app2 = m.App(self.root)
             self.apps.append(app2)
             self.assertEqual((app2.theme, app2.size), ("light", 10))

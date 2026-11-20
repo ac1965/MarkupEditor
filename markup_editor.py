@@ -74,7 +74,7 @@ class Renderer(HTMLParser):
 
     パーサーは決まった範囲のタグしか出さないので、ここもその範囲だけを扱う
     （見出し、段落、強調、取り消し線、コード、リンク、リスト、引用、水平線、表、
-    チェックボックス、画像の代替表示、Org の TODO とタグの <span>）。
+    チェックボックス、画像の代替表示、Org の TODO・タグ・予定の <span>、脚注の <sup>）。
     それ以外のタグは、中の文字だけを出す。
     """
 
@@ -84,7 +84,7 @@ class Renderer(HTMLParser):
         self.w = app.pv
         self.tail = ""
         self.bold = self.italic = self.code = self.strike = 0
-        self.heading = self.pre = self.quote = self.muted = 0
+        self.heading = self.pre = self.quote = self.muted = self.sup = 0
         self.spans = []  # <span> ごとの種類（"bold" / "muted" / None）
         self.link = None
         self.lists = []
@@ -109,8 +109,10 @@ class Renderer(HTMLParser):
             tags.append("pre")
         if self.link:
             tags.append(self.link)
-        if self.quote or self.muted:
+        if self.quote or self.muted or self.sup:
             tags.append("quote")
+        if self.sup:
+            tags.append("sup")
         tags.append(self.app.margin_tag(self.quote, len(self.lists)))
         self.w.insert("end", text, tuple(tags))
         self.tail = (self.tail + text)[-2:]
@@ -157,7 +159,9 @@ class Renderer(HTMLParser):
             self.strike += 1
         elif tag == "code":
             self.code += 1
-        elif tag == "span":  # Org の TODO キーワード（太字）とタグ（目立たない色）
+        elif tag == "sup":  # Org の脚注の番号（上付き）
+            self.sup += 1
+        elif tag == "span":  # Org の TODO キーワード（太字）とタグ・予定（目立たない色）
             cls = (a.get("class") or "").split()
             kind = "bold" if "todo" in cls else "muted" if "tag" in cls else None
             self.spans.append(kind)
@@ -236,6 +240,8 @@ class Renderer(HTMLParser):
             self.strike = max(0, self.strike - 1)
         elif tag == "code":
             self.code = max(0, self.code - 1)
+        elif tag == "sup":
+            self.sup = max(0, self.sup - 1)
         elif tag == "span":
             kind = self.spans.pop() if self.spans else None
             self.bold = max(0, self.bold - (kind == "bold"))
@@ -512,6 +518,7 @@ class App:
         self.status.configure(background=t["panel"], foreground=t["muted"])
         pv = self.pv
         pv.tag_configure("strike", overstrike=True)
+        pv.tag_configure("sup", offset=4)
         pv.tag_configure("code", background=t["code"])
         pv.tag_configure("pre", background=t["pre"])
         pv.tag_configure("quote", foreground=t["muted"])

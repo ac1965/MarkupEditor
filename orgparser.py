@@ -1,18 +1,21 @@
 """Org-mode -> HTML パーサー（Org の文書を読む・軽く編集するための部分対応）。
 
 標準ライブラリのみ。mdparser と同じく、入力はすべてエスケープし、生の HTML は通さない。
-リンクと画像の URL は safe_url() を通す。
+リンクと画像の URL は safe_url() を通す。ファイルは読まない（純粋な関数）。
 
 対応する書き方:
   見出し（* の数が階層、TODO / DONE、行末の :tag:）、段落、
   *太字* /斜体/ _下線_ +取り消し+ =逐語= ~コード~、
   リンク [[URL][説明]] [[URL]]（画像の URL は画像）、素の http(s) URL、
   リスト（- + *、1. 1)、入れ子、[ ] [X] のチェックボックス）、
-  #+BEGIN_SRC / #+BEGIN_QUOTE / #+BEGIN_COMMENT、表（|---+---| の区切り行）、
-  水平線（-----）、#+TITLE:、行頭の # のコメント。
-上記以外の #+ で始まる行は表示しない（#+BEGIN_EXAMPLE などの囲みの行も表示せず、
-中身は普通の文として扱う）。:PROPERTIES: ドロワー、SCHEDULED / DEADLINE、脚注、
-説明リスト（- 語 :: 説明）、Babel などは未対応。
+  #+BEGIN_SRC / #+BEGIN_EXAMPLE / #+BEGIN_QUOTE / #+BEGIN_COMMENT、
+  表（|---+---| の区切り行）、水平線（-----）、#+TITLE:、行頭の # のコメント、
+  SCHEDULED: / DEADLINE: / CLOSED: の行（目立たない色で表示）、
+  ドロワー（:PROPERTIES: は表示しない。ほかの :名前: は、中身だけを表示する）、
+  脚注（本文の [fn:ラベル] を、参照された順の番号にして、定義 [fn:ラベル] 本文 を末尾に出す）。
+上記以外の #+ で始まる行は表示しない（#+BEGIN_EXPORT などの囲みの行も表示せず、
+中身は普通の文として扱う）。#+INCLUDE（別ファイルの取り込み）、インライン脚注
+[fn::本文]、説明リスト（- 語 :: 説明）、Babel などは未対応。
 
 Org 本来の規則に合わせているので、強調記号（* / _ + = ~）は、直前が空白か ( { ' " -、
 直後が空白か - . , ; : ! ? ' ) } " のときだけ有効になる。日本語の文字や読点のすぐ隣
@@ -43,6 +46,7 @@ _CODE = re.compile(_PRE + r"([=~])(?=\S)([^\n]{0,%d}?\S)\1" % _MAX + _POST)
 # URL も説明も 500 文字まで。閉じていない [[ が大量にあっても、探索が二乗に増えない
 _LINK2 = re.compile(r"\[\[([^\]]{1,500})\]\[([^\]]{1,500})\]\]")
 _LINK1 = re.compile(r"\[\[([^\]]{1,500})\]\]")
+_FNREF = re.compile(r"\[fn:([\w-]{1,50})\]")
 _IMG = re.compile(r"\.(png|jpe?g|gif|svg|webp)\Z", re.I)
 _BARE = re.compile(r"(^|[\s(])(https?://[^\s<　-鿿＀-￯]+)")
 _HOLD = re.compile(r"\x00(\d+)\x00")
@@ -55,7 +59,8 @@ def _marks(s):
     return s
 
 
-def _inline(s):
+def _inline(s, fn=None):
+    """fn は、脚注のラベルから番号への対応。参照 [fn:ラベル] を番号にする。"""
     s = s.replace("\x00", "")  # プレースホルダの偽造を防ぐ
     stash = []
 
@@ -65,6 +70,9 @@ def _inline(s):
 
     s = _CODE.sub(lambda m: hold("<code>" + esc(m.group(2)) + "</code>"), s)
     s = esc(s)
+    if fn:  # 定義のないラベルは、そのまま文字として残す
+        s = _FNREF.sub(lambda m: hold("<sup>%d</sup>" % fn[m.group(1)])
+                       if m.group(1) in fn else m.group(0), s)
     s = _LINK2.sub(lambda m: hold(
         '<a href="' + safe_url(m.group(1)) + '"' + _A + ">"
         + _marks(m.group(2)) + "</a>"), s)
@@ -103,7 +111,13 @@ _SEP = re.compile(r"^\s*\|[-+]+\|?\s*\Z")
 _ITEM = re.compile(r"^(\s*)([-+*]|\d+[.)])\s+(.*)")
 _TODO = re.compile(r"^(TODO|DONE)\s+(.*)")
 _TAGS = re.compile(r"\s+(:(?:[\w@#%]+:)+)\Z")
-_BLOCKS = ("SRC", "QUOTE", "COMMENT")
+_PLAN = re.compile(
+    r"^\s*((?:(?:SCHEDULED|DEADLINE|CLOSED):\s*[<\[][^>\]\n]{1,60}[>\]]\s*)+)\Z")
+_DRAWER = re.compile(r"^\s*:([\w-]{1,40}):\s*\Z")
+_DRAWER_END = re.compile(r"^\s*:END:\s*\Z", re.I)
+_FNDEF = re.compile(r"^\[fn:([\w-]{1,50})\]\s*(.*)")
+_BLOCKS = ("SRC", "EXAMPLE", "QUOTE", "COMMENT")
+_VERBATIM = ("SRC", "EXAMPLE", "COMMENT")  # 中身を解釈しない囲み
 
 
 def _blank(l):
@@ -140,13 +154,32 @@ def _end_index(L, i, kind):
     return j
 
 
+def _drawer_end(L, i):
+    """:END: の行の位置。ドロワーは入れ子にならないので、途中に見出しや別のドロワーの
+    始まりがあれば、ドロワーではないとして None を返す（探索は次の候補までで止まる）。"""
+    for j in range(i + 1, len(L)):
+        if _DRAWER_END.match(L[j]):
+            return j
+        if _HEAD.match(L[j]) or _DRAWER.match(L[j]):
+            return None
+    return None
+
+
+def _drawer_start(L, i):
+    """L[i] が、閉じられているドロワーの始まりなら、その :END: の位置。そうでなければ None。"""
+    m = _DRAWER.match(L[i])
+    if m and m.group(1).upper() != "END":
+        return _drawer_end(L, i)
+    return None
+
+
 def _starts_block(l):
     return bool(_blank(l) or _KEYWORD.match(l) or _COMMENT.match(l)
                 or _HEAD.match(l) or _HR.match(l) or _TABLE.match(l)
-                or _item(l))
+                or _PLAN.match(l) or _item(l))
 
 
-def _heading(m):
+def _heading(m, fn):
     level = min(len(m.group(1)), 6)
     text, kw, tags = m.group(2), "", ""
     t = _TODO.match(text)
@@ -158,7 +191,7 @@ def _heading(m):
     if g:
         tags = ' <span class="tag">%s</span>' % esc(g.group(1))
         text = text[:g.start()]
-    return "<h%d>%s%s%s</h%d>" % (level, kw, _inline(text), tags, level)
+    return "<h%d>%s%s%s</h%d>" % (level, kw, _inline(text, fn), tags, level)
 
 
 def _cells(line):
@@ -170,7 +203,7 @@ def _cells(line):
     return [c.strip() for c in line.split("|")]
 
 
-def _table(lines):
+def _table(lines, fn):
     rows = [None if _SEP.match(l) else _cells(l) for l in lines]
     first_sep = next((k for k, r in enumerate(rows) if r is None), None)
     if first_sep:  # 区切り行より上が見出し行
@@ -182,7 +215,7 @@ def _table(lines):
 
     def tr(r, tag):
         r = r + [""] * (cols - len(r))
-        return "<tr>" + "".join("<%s>%s</%s>" % (tag, _inline(c), tag)
+        return "<tr>" + "".join("<%s>%s</%s>" % (tag, _inline(c, fn), tag)
                                 for c in r) + "</tr>"
 
     out = "<table>"
@@ -192,7 +225,7 @@ def _table(lines):
         + "</tbody></table>"
 
 
-def _parse_list(L, i):
+def _parse_list(L, i, fn):
     n = len(L)
     first = _item(L[i])
     base = len(first.group(1))
@@ -232,17 +265,17 @@ def _parse_list(L, i):
                 break
             kind = _block_start(l)
             if _item(l):
-                html, i = _parse_list(L, i)
+                html, i = _parse_list(L, i, fn)
                 inner += html
             elif kind:
                 end = min(_end_index(L, i, kind) + 1, n)
-                inner += _blocks(_dedent(L[i:end], ind))
+                inner += _blocks(_dedent(L[i:end], ind), fn)
                 i = end
             elif _TABLE.match(l):
                 j = i
                 while j < n and _TABLE.match(L[j]) and _indent(L[j]) > base:
                     j += 1
-                inner += _blocks(_dedent(L[i:j], ind))
+                inner += _blocks(_dedent(L[i:j], ind), fn)
                 i = j
             else:
                 text += " " + l.strip()
@@ -253,13 +286,13 @@ def _parse_list(L, i):
             box = ('<input type="checkbox" disabled'
                    + (" checked" if c.group(1) in "Xx" else "") + "> ")
             text = text[len(c.group(0)):]
-        items.append("<li>" + box + _inline(text) + inner + "</li>")
+        items.append("<li>" + box + _inline(text, fn) + inner + "</li>")
     tag = "ol" if ordered else "ul"
     attr = ' start="%d"' % start if ordered and start != 1 else ""
     return "<" + tag + attr + ">" + "".join(items) + "</" + tag + ">", i
 
 
-def _blocks(L):
+def _blocks(L, fn):
     n, i, out = len(L), 0, []
     while i < n:
         l = L[i]
@@ -271,20 +304,23 @@ def _blocks(L):
             end = _end_index(L, i, kind)
             body = _dedent(L[i + 1:end], _indent(l))
             i = min(end + 1, n)
-            if kind == "SRC":
-                lang = (_BEGIN.match(l).group(2) or "").split()
-                lang = lang[0] if lang else ""
+            if kind in ("SRC", "EXAMPLE"):
+                lang = ""
+                if kind == "SRC":
+                    words = (_BEGIN.match(l).group(2) or "").split()
+                    lang = words[0] if words else ""
                 code = "\n".join(re.sub(r"^,(?=\*|#\+)", "", x) for x in body)
                 cls = (' class="lang-' + esc(lang) + '"') if lang else ""
                 out.append("<pre><code" + cls + ">" + esc(code)
                            + "</code></pre>")
             elif kind == "QUOTE":
-                out.append("<blockquote>" + _blocks(body) + "</blockquote>")
+                out.append("<blockquote>" + _blocks(body, fn)
+                           + "</blockquote>")
             continue  # COMMENT は表示しない
         m = _KEYWORD.match(l)
         if m:  # #+TITLE: だけ表示し、ほかの #+ の行は表示しない
             if m.group(1).upper() == "TITLE" and m.group(2):
-                out.append('<h1 class="title">' + _inline(m.group(2))
+                out.append('<h1 class="title">' + _inline(m.group(2), fn)
                            + "</h1>")
             i += 1
             continue
@@ -293,8 +329,22 @@ def _blocks(L):
             continue
         m = _HEAD.match(l)
         if m:
-            out.append(_heading(m))
+            out.append(_heading(m, fn))
             i += 1
+            continue
+        m = _PLAN.match(l)
+        if m:
+            out.append('<p><span class="tag">' + esc(" ".join(m.group(1).split()))
+                       + "</span></p>")
+            i += 1
+            continue
+        j = _drawer_start(L, i)
+        if j is not None:
+            if _DRAWER.match(l).group(1).upper() != "PROPERTIES":
+                inner = _blocks(L[i + 1:j], fn)  # PROPERTIES だけは表示しない
+                if inner:
+                    out.append(inner)
+            i = j + 1
             continue
         if _HR.match(l):
             out.append("<hr>")
@@ -304,22 +354,70 @@ def _blocks(L):
             j = i
             while j < n and _TABLE.match(L[j]):
                 j += 1
-            out.append(_table(L[i:j]))
+            out.append(_table(L[i:j], fn))
             i = j
             continue
         if _item(l):
-            html, i = _parse_list(L, i)
+            html, i = _parse_list(L, i, fn)
             out.append(html)
             continue
         p = [l.strip()]
         i += 1
-        while i < n and not _starts_block(L[i]):
+        while (i < n and not _starts_block(L[i])
+               and not _drawer_start(L, i)):  # ドロワーは段落を中断する
             p.append(L[i].strip())
             i += 1
-        out.append("<p>" + _inline("\n".join(p)) + "</p>")
+        out.append("<p>" + _inline("\n".join(p), fn) + "</p>")
     return "\n".join(out)
+
+
+def _footnotes(L):
+    """脚注の定義を本文から取り出す。
+
+    戻り値は (定義を除いた本文の行, {ラベル: 定義の本文}, {ラベル: 番号})。
+    番号は、本文で参照された順。参照されない定義は、番号を持たず、表示しない。
+    SRC / EXAMPLE / COMMENT の中は、脚注として解釈しない。
+    """
+    body, defs, refs, i, n = [], {}, [], 0, len(L)
+    while i < n:
+        l = L[i]
+        kind = _block_start(l)
+        if kind in _VERBATIM:
+            end = min(_end_index(L, i, kind) + 1, n)
+            body.extend(L[i:end])
+            i = end
+            continue
+        m = _FNDEF.match(l)
+        if m:  # 定義は、次の空行・見出し・別の定義まで続く
+            text = [m.group(2)]
+            i += 1
+            while (i < n and not _blank(L[i]) and not _HEAD.match(L[i])
+                   and not _FNDEF.match(L[i])):
+                text.append(L[i].strip())
+                i += 1
+            defs.setdefault(m.group(1), " ".join(t for t in text if t))
+            continue
+        refs.extend(r.group(1) for r in _FNREF.finditer(l))
+        body.append(l)
+        i += 1
+    # 本文の参照を先に、そのあとに、脚注の定義の中にある参照を、番号の順に辿る
+    fn, k = {}, 0
+    while k < len(refs):
+        label = refs[k]
+        k += 1
+        if label in defs and label not in fn:
+            fn[label] = len(fn) + 1
+            refs.extend(r.group(1) for r in _FNREF.finditer(defs[label]))
+    return body, defs, fn
 
 
 def org_to_html(src):
     lines = src.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    return _blocks([l.expandtabs(8) for l in lines])
+    body, defs, fn = _footnotes([l.expandtabs(8) for l in lines])
+    html = _blocks(body, fn)
+    if fn:
+        items = "".join(
+            "<p><sup>%d</sup> %s</p>" % (num, _inline(defs[label], fn))
+            for label, num in sorted(fn.items(), key=lambda kv: kv[1]))
+        html += '\n<hr>\n<div class="footnotes">' + items + "</div>"
+    return html
