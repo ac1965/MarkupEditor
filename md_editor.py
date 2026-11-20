@@ -2,9 +2,11 @@
 """MD Editor (Python / tkinter 版)。
 
 Windows / macOS / Linux で、Python 3.8 以上の標準ライブラリだけで動く
-Markdown エディタ。左で書くと右のプレビューにすぐ反映される。
+Markdown / Org エディタ。左で書くと右のプレビューにすぐ反映される。
+ファイル名が .org なら Org として、それ以外は Markdown として解釈する
+（Org は編集だけで、HTML への書き出しは Markdown のみ）。
 
-    python md_editor.py [ファイル.md]
+    python md_editor.py [ファイル.md | ファイル.org]
 """
 import json
 import re
@@ -18,6 +20,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from mdparser import export_html, md_to_html
+from orgparser import org_to_html
 
 APP = "MD Editor"
 SAMPLE = """# MD Editor
@@ -55,7 +58,13 @@ RENDER_MIN_MS, RENDER_MAX_MS = 120, 1500
 
 
 class Renderer(HTMLParser):
-    """mdparser が出す HTML を tkinter の Text に描く。"""
+    """mdparser / orgparser が出す HTML を、tkinter の Text に描く。
+
+    パーサーは決まった範囲のタグしか出さないので、ここもその範囲だけを扱う
+    （見出し、段落、強調、取り消し線、コード、リンク、リスト、引用、水平線、表、
+    チェックボックス、画像の代替表示、Org の TODO とタグの <span>）。
+    それ以外のタグは、中の文字だけを出す。
+    """
 
     def __init__(self, app):
         super().__init__(convert_charrefs=True)
@@ -63,7 +72,8 @@ class Renderer(HTMLParser):
         self.w = app.pv
         self.tail = ""
         self.bold = self.italic = self.code = self.strike = 0
-        self.heading = self.pre = self.quote = 0
+        self.heading = self.pre = self.quote = self.muted = 0
+        self.spans = []  # <span> ごとの種類（"bold" / "muted" / None）
         self.link = None
         self.lists = []
         self.table = None
@@ -87,7 +97,7 @@ class Renderer(HTMLParser):
             tags.append("pre")
         if self.link:
             tags.append(self.link)
-        if self.quote:
+        if self.quote or self.muted:
             tags.append("quote")
         tags.append(self.app.margin_tag(self.quote, len(self.lists)))
         self.w.insert("end", text, tuple(tags))
@@ -135,6 +145,12 @@ class Renderer(HTMLParser):
             self.strike += 1
         elif tag == "code":
             self.code += 1
+        elif tag == "span":  # Org の TODO キーワード（太字）とタグ（目立たない色）
+            cls = (a.get("class") or "").split()
+            kind = "bold" if "todo" in cls else "muted" if "tag" in cls else None
+            self.spans.append(kind)
+            self.bold += kind == "bold"
+            self.muted += kind == "muted"
         elif tag == "pre":
             self.ensure_blank()
             self.pre += 1
@@ -208,6 +224,10 @@ class Renderer(HTMLParser):
             self.strike = max(0, self.strike - 1)
         elif tag == "code":
             self.code = max(0, self.code - 1)
+        elif tag == "span":
+            kind = self.spans.pop() if self.spans else None
+            self.bold = max(0, self.bold - (kind == "bold"))
+            self.muted = max(0, self.muted - (kind == "muted"))
         elif tag == "pre":
             self.ensure_nl()
             self.pre = max(0, self.pre - 1)
@@ -415,6 +435,7 @@ class App:
         f.add_separator()
         f.add_command(label="HTML として書き出し…", accelerator=mod + "E",
                       command=self.export)
+        self.file_menu, self.export_index = f, f.index("end")
         f.add_separator()
         f.add_command(label="終了", command=self.quit)
         bar.add_cascade(label="ファイル", menu=f)
@@ -628,6 +649,13 @@ class App:
         self.pv_width = event.width
         self.schedule_render(150)
 
+    def is_org(self):
+        """ファイル名が .org なら Org として、それ以外は Markdown として解釈する。"""
+        return self.name.lower().endswith(".org")
+
+    def to_html(self, text):
+        return (org_to_html if self.is_org() else md_to_html)(text)
+
     def preview_visible(self):
         return self.mode_var.get() in ("split", "preview")
 
@@ -658,7 +686,7 @@ class App:
         start = time.perf_counter()
         html, notice = "", None
         try:
-            html = md_to_html(text)
+            html = self.to_html(text)
         except RecursionError:
             notice = "入れ子が深すぎて、プレビューを描画できません。"
         except Exception as e:  # 解析の失敗でエディタを止めない
@@ -690,6 +718,9 @@ class App:
     def refresh_title(self):
         self.root.title("%s%s — %s" % ("● " if self.dirty else "",
                                        self.name, APP))
+        # Org は編集だけ。HTML への書き出しは選べなくする
+        self.file_menu.entryconfigure(
+            self.export_index, state="disabled" if self.is_org() else "normal")
 
     # --- ファイル操作 ---------------------------------------------
     def set_text(self, text):
@@ -726,7 +757,7 @@ class App:
         if not self.ok_discard():
             return
         p = filedialog.askopenfilename(
-            filetypes=[("Markdown", "*.md *.markdown *.txt"),
+            filetypes=[("Markdown / Org", "*.md *.markdown *.org *.txt"),
                        ("すべてのファイル", "*")])
         if p:
             self.open_path(p)
@@ -773,13 +804,18 @@ class App:
     def save_as(self):
         p = filedialog.asksaveasfilename(
             defaultextension=".md", initialfile=self.name,
-            filetypes=[("Markdown", "*.md"), ("すべてのファイル", "*")])
+            filetypes=[("Markdown", "*.md"), ("Org", "*.org"),
+                       ("すべてのファイル", "*")])
         if not p:
             return False
         self.path, self.name = Path(p), Path(p).name
+        self.render()  # 拡張子で、Markdown と Org の解釈が変わる
         return self.save()
 
     def export(self):
+        if self.is_org():  # Org は編集だけ。HTML への書き出しは Markdown のみ
+            messagebox.showinfo(APP, "Org ファイルは HTML に書き出せません。")
+            return
         stem = Path(self.name).stem
         p = filedialog.asksaveasfilename(
             defaultextension=".html", initialfile=stem + ".html",

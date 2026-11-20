@@ -117,6 +117,19 @@ class Limits(unittest.TestCase):
             md_to_html(src)
             self.assertLess(time.perf_counter() - t0, 3.0)
 
+    def test_unclosed_brackets_stay_fast(self):
+        for src in ("[" * 20000, "![" * 20000, "[a" * 20000):
+            t0 = time.perf_counter()
+            md_to_html(src)
+            self.assertLess(time.perf_counter() - t0, 3.0)
+
+    def test_link_text_length_limit(self):
+        # 上限を超えたら、[ がそのまま出る（URL は別に自動リンクされる）
+        self.assertTrue(md_to_html("[" + "あ" * 500 + "](https://e.com)")
+                        .startswith("<p><a "))
+        self.assertTrue(md_to_html("[" + "あ" * 510 + "](https://e.com)")
+                        .startswith("<p>["))
+
     def test_deep_nesting_raises_recursion_error_only(self):
         # 深すぎる入れ子は RecursionError になる。呼び出し側（GUI）が受け止める
         deep = "".join("  " * i + "- x\n" for i in range(3000))

@@ -1,14 +1,17 @@
 """Markdown -> HTML パーサー。
 
 標準ライブラリのみ。GUI にも OS にも依存しない純粋な関数群。
+esc() / safe_url() / trim_url() は、orgparser.py も使う。
 入力はすべてエスケープし、生の HTML は通さない。リンクと画像の URL は
 safe_url() を通し、http / https / mailto / tel と相対パス以外は '#' にする。
 """
 import re
 
-__all__ = ["md_to_html", "esc", "safe_url", "export_html"]
+__all__ = ["md_to_html", "esc", "safe_url", "trim_url", "export_html"]
 
-_W = "A-Za-z0-9_"  # JS の \w（ASCII のみ）に合わせる
+# 単語を作る文字。Unicode の \w ではなく ASCII だけにして、
+# 日本語の文字のすぐ隣でも _ の強調が効くようにする（日本語_強調_です）
+_W = "A-Za-z0-9_"
 
 
 def esc(s):
@@ -57,7 +60,8 @@ def _emph(s):
     return s
 
 
-def _trim_url(u):
+def trim_url(u):
+    """URL の末尾にくっついた句読点や、対応のない閉じ括弧を取り除く。"""
     m = re.search(r"&(?:lt|gt|quot);", u)
     if m:
         u = u[:m.start()]
@@ -76,8 +80,9 @@ _CODE = re.compile(r"`([^`\n]+)`")
 _BSLASH = re.compile(r"\\([!-/:-@\[-`{-~])")
 _URL = r"((?:[^()\s]|\([^()\s]*\))+)"
 _TITLE = r"(?:\s+&quot;([^&]*)&quot;)?"
-_IMG = re.compile(r"!\[([^\]]*)\]\(" + _URL + _TITLE + r"\)")
-_LINK = re.compile(r"\[([^\]]+)\]\(" + _URL + _TITLE + r"\)")
+# リンク文字・代替テキストの最大長。閉じ括弧のない [ が大量にあっても、探索が二乗に増えない
+_IMG = re.compile(r"!\[([^\]]{0,500})\]\(" + _URL + _TITLE + r"\)")
+_LINK = re.compile(r"\[([^\]]{1,500})\]\(" + _URL + _TITLE + r"\)")
 _AUTOLINK = re.compile(
     r"(^|[\s(*_~])((?:https?://|www\.)[^\s<\u3000-\u9fff\uff00-\uffef]+)")
 _EMAIL = re.compile(
@@ -112,7 +117,7 @@ def inline(s):
 
     def auto(m):
         p, raw = m.group(1), m.group(2)
-        u = _trim_url(raw)
+        u = trim_url(raw)
         if not re.match(r"(https?://|www\.)[^\s.]", u):
             return m.group(0)
         href = "http://" + u if u.startswith("www.") else u

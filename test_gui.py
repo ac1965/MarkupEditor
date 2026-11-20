@@ -180,6 +180,88 @@ class GuiTest(unittest.TestCase):
         self.assertIn("<h1>Title</h1>", html)
         self.assertNotIn("https://", html)
 
+    # --- Org ------------------------------------------------------
+    ORG = "#+TITLE: メモ\n* TODO 買う :home:\n- [X] 卵\n本文の *太字* と /斜体/\n"
+
+    def export_state(self):
+        return str(self.app.file_menu.entrycget(self.app.export_index, "state"))
+
+    def test_org_file_is_rendered_as_org_and_markdown_is_not(self):
+        p = self.dir / "a.org"
+        p.write_text(self.ORG, encoding="utf-8")
+        app = self.app
+        app.open_path(p)
+        text = self.preview()
+        self.assertIn("メモ", text)
+        self.assertIn("TODO 買う", text)  # 見出しになり、* は表示されない
+        self.assertNotIn("* TODO", text)
+        self.assertIn("☑ 卵", text)
+        self.assertNotIn("/斜体/", text)  # Org の斜体
+        # 同じ文字でも、.md なら Markdown として解釈される
+        app.name = "a.md"
+        app.render()
+        md = self.preview()
+        self.assertIn("• TODO 買う", md)  # Markdown では箇条書き
+        self.assertIn("/斜体/", md)  # Org の記号は、そのまま出る
+
+    def test_extension_decides_the_format_case_insensitively(self):
+        app = self.app
+        for name, org in (("a.org", True), ("A.ORG", True), ("a.md", False),
+                          ("a.org.md", False), ("org", False),
+                          ("無題.md", False)):
+            app.name = name
+            self.assertEqual(app.is_org(), org, name)
+
+    def test_todo_and_tag_are_styled_in_preview(self):
+        app = self.app
+        app.name = "a.org"
+        app.set_text("* TODO 買う :home:\n")
+        app.render()
+        pv = app.pv
+        todo = pv.search("TODO", "1.0")
+        tag = pv.search(":home:", "1.0")
+        self.assertEqual(
+            app.fonts[next(t for t in pv.tag_names(todo)
+                           if t in app.fonts)].cget("weight"), "bold")
+        self.assertIn("quote", pv.tag_names(tag))  # 目立たない色
+        self.assertNotIn("quote", pv.tag_names(pv.search("買う", "1.0")))
+
+    def test_export_is_disabled_for_org_and_blocked_by_shortcut(self):
+        app = self.app
+        with mock.patch.object(m.messagebox, "showinfo") as info:
+            self.assertEqual(self.export_state(), "normal")
+            app.name = "a.org"
+            app.refresh_title()
+            self.assertEqual(self.export_state(), "disabled")
+            app.export()  # Ctrl+E でも書き出さない
+            self.assertEqual(info.call_count, 1)
+            self.assertFalse(self.asked.count("asksave"))
+        app.name = "a.md"
+        app.refresh_title()
+        self.assertEqual(self.export_state(), "normal")
+
+    def test_save_as_org_switches_the_preview_format(self):
+        app = self.app
+        app.set_text("* 見出し\n")
+        app.render()
+        self.assertIn("• 見出し", self.preview())  # Markdown では箇条書き
+        out = self.dir / "b.org"
+        with mock.patch.object(m.filedialog, "asksaveasfilename",
+                               return_value=str(out)):
+            app.save_as()
+        self.assertEqual(out.read_text(encoding="utf-8"), "* 見出し\n")
+        self.assertNotIn("•", self.preview())  # Org の見出しになる
+        self.assertEqual(self.export_state(), "disabled")
+
+    def test_org_file_roundtrip_keeps_bytes(self):
+        p = self.dir / "r.org"
+        raw = "﻿* 見出し\r\n本文\r\n".encode("utf-8")
+        p.write_bytes(raw)
+        app = self.app
+        app.open_path(p)
+        app.save()
+        self.assertEqual(p.read_bytes(), raw)
+
     # --- 描画の堅牢性と効率 ---------------------------------------
     def test_render_failure_restores_state_and_shows_notice(self):
         app = self.app
