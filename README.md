@@ -19,11 +19,25 @@ Org ファイル（`.org`）も、同じ画面で編集できる。
 
 ![Org ファイルの表示](docs/screenshot-org.png)
 
-## 要件
+## 必要な環境
 
-- Python 3.8 以上（tkinter を含むもの）。Windows と macOS の公式配布版には入っている。
-  Debian / Ubuntu 系では `python3-tk` が別パッケージ。
-- 外部パッケージ・外部通信は使わない。
+| 項目 | 内容 |
+|---|---|
+| Python | 3.8 以上。コードの構文と、使っている標準ライブラリの機能は、3.8 に収まるようにしてある（3.9 以降の機能は使っていない）。ただし、実際に動かして確かめたのは **Python 3.14** だけ。 |
+| tkinter | Python に含まれていること（Tk のバージョンは、確かめたのは **Tk 9.0** だけ）。Windows と macOS の公式配布版には入っている。Debian / Ubuntu 系は `sudo apt install python3-tk`、Fedora 系は `sudo dnf install python3-tkinter` で入る。pip では入らない。 |
+| OS | Windows / macOS / Linux で動く作り（OS 固有の API は使わない）。実際に動かして確かめたのは **Windows 11** だけ。 |
+| 画面 | デスクトップ環境が必要（GUI アプリ）。画面の無い環境（SSH だけで入るサーバなど）では起動できない。 |
+| 追加のもの | **なし**。外部パッケージ（`requirements.txt` は無い）、Node.js、ビルド、外部との通信は、どれも要らない。 |
+| 文字コード・フォント | ファイルは UTF-8。表示には、OS 標準の日本語フォントを使う（プレビュー本文のフォントは、表示メニューで変えられる）。 |
+
+使えるかどうかは、次のコマンドで確かめられる。
+
+```
+python --version
+python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+```
+
+2 つ目が `Tk 8.6` や `Tk 9.0` のように表示されれば、tkinter は入っている。`ModuleNotFoundError` になる場合は、上の表のとおり、OS のパッケージで入れる。
 
 ## 操作
 
