@@ -297,6 +297,291 @@ class GuiTest(unittest.TestCase):
         app.save()
         self.assertEqual(p.read_bytes(), raw)
 
+    # --- リンクをクリックして開く ---------------------------------
+    def make_tree(self):
+        """root/README.org が org/core.org などへリンクする、小さなフォルダを作る。"""
+        base = (self.dir / "tree").resolve()
+        root = base / "root"
+        (root / "org").mkdir(parents=True)
+        (root / "sub").mkdir()
+        (root / "img").mkdir()
+        (base / "outside.org").write_text("* 外のファイル\n", encoding="utf-8")
+        (root / "README.org").write_text(
+            "* 目次\n[[file:org/core.org][core]] [[file:../outside.org][out]]\n",
+            encoding="utf-8")
+        (root / "org" / "core.org").write_text(
+            "* Core\n本文\n* Setup\n:PROPERTIES:\n:CUSTOM_ID: cid\n:END:\n"
+            "setup の本文\n[[file:../README.org][back]]\n", encoding="utf-8")
+        (root / "notes.txt").write_text("メモ\n", encoding="utf-8")
+        (root / "img" / "a.png").write_bytes(b"\x89PNG\r\n")
+        (root / "My Doc.md").write_text("# 空白つき\n", encoding="utf-8")
+        return base, root
+
+    def refused(self, info):
+        """showinfo が呼ばれた回数（開かなかった理由を伝えた回数）。"""
+        return info.call_count
+
+    def test_clicking_a_relative_file_link_opens_it_and_back_returns(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        self.assertFalse(app.history)
+        app.open_link("org/core.org")
+        self.assertEqual(app.path, (root / "org" / "core.org"))
+        self.assertTrue(app.ed.get("1.0", "end-1c").startswith("* Core"))
+        self.assertEqual(app.history, [root / "README.org"])
+        self.assertEqual(str(app.file_menu.entrycget(app.back_index, "state")),
+                         "normal")
+        app.go_back()
+        self.assertEqual(app.path, root / "README.org")
+        self.assertIn("目次", app.ed.get("1.0", "end-1c"))
+        self.assertFalse(app.history)
+        self.assertEqual(str(app.file_menu.entrycget(app.back_index, "state")),
+                         "disabled")
+        app.go_back()  # 履歴が空なら、何も起きない
+        self.assertEqual(app.path, root / "README.org")
+
+    def test_a_real_mouse_click_on_the_link_opens_the_file(self):
+        _, root = self.make_tree()
+        app = self.app
+        self.root.geometry("900x600")
+        app.open_path(root / "README.org")
+        pump(self.root, 300)
+        pv = app.pv
+        at = pv.search("core", "1.0")
+        x, y, w, h = pv.bbox(at)
+        # 本物のマウスと同じく、先にポインタを動かして、リンクの上に乗せてから押す
+        pv.event_generate("<Motion>", x=x + 3, y=y + h // 2)
+        self.root.update()
+        pv.event_generate("<Button-1>", x=x + 3, y=y + h // 2)
+        self.root.update()
+        self.assertEqual(app.path, root / "org" / "core.org")
+
+    def test_search_option_moves_the_cursor_and_the_preview(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        # 見出し、CUSTOM_ID（ドロワーの直前の見出しへ）、行番号、文字列
+        for href, line in (("org/core.org::*Setup", 3), ("org/core.org::#cid", 3),
+                           ("org/core.org::7", 7), ("org/core.org::の本文", 7)):
+            app.open_path(root / "README.org")
+            app.open_link(href)
+            self.assertEqual(app.path, root / "org" / "core.org", href)
+            self.assertEqual(app.ed.index("insert"), "%d.0" % line, href)
+
+    def test_search_option_not_found_reports_and_does_not_move(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        app.open_link("org/core.org::*存在しない見出し")
+        self.assertEqual(app.path, root / "org" / "core.org")  # ファイルは開く
+        self.assertIn("見つかりませんでした", app.status.cget("text"))
+
+    def test_internal_links_jump_within_the_org_document(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "org" / "core.org")
+        app.open_link("#cid")
+        self.assertEqual(app.ed.index("insert"), "3.0")
+        app.ed.mark_set("insert", "1.0")
+        app.open_link("*Setup")
+        self.assertEqual(app.ed.index("insert"), "3.0")
+        self.assertFalse(app.history)  # 同じ文書の中なので、履歴は増えない
+        app.open_link("::7")
+        self.assertEqual(app.ed.index("insert"), "7.0")
+
+    def test_links_may_go_up_but_never_outside_the_root(self):
+        base, root = self.make_tree()
+        app = self.app
+        with mock.patch.object(m.messagebox, "showinfo") as info:
+            app.open_path(root / "README.org")
+            app.open_link("org/core.org")
+            app.open_link("../README.org")  # root の中なので、開いてよい
+            self.assertEqual(app.path, root / "README.org")
+            self.assertEqual(self.refused(info), 0)
+            app.open_link("../outside.org")  # root の外
+            self.assertEqual(app.path, root / "README.org")
+            self.assertEqual(self.refused(info), 1)
+            self.assertIn("外", info.call_args.args[1])
+        self.assertIn("目次", app.ed.get("1.0", "end-1c"))
+
+    def test_opening_a_sub_document_directly_makes_its_folder_the_root(self):
+        # 利用者が core.org を直接開いたなら、根は org/。親の README.org へは出られない
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "org" / "core.org")
+        with mock.patch.object(m.messagebox, "showinfo") as info:
+            app.open_link("../README.org")
+        self.assertEqual(app.path, root / "org" / "core.org")
+        self.assertEqual(self.refused(info), 1)
+
+    def test_the_root_does_not_move_when_following_links(self):
+        base, root = self.make_tree()
+        app = self.app
+        with mock.patch.object(m.messagebox, "showinfo") as info:
+            app.open_path(root / "README.org")
+            app.open_link("org/core.org")
+            self.assertEqual(app.link_root, root)
+            # core.org から見て ../../outside.org は root の外
+            app.open_link("../../outside.org")
+            self.assertEqual(app.path, root / "org" / "core.org")
+            self.assertEqual(self.refused(info), 1)
+        # 利用者が自分で開き直したら、その文書のあるフォルダが新しい根
+        app.open_path(base / "outside.org")
+        self.assertEqual(app.link_root, base)
+        self.assertFalse(app.history)
+
+    def test_absolute_paths_are_not_opened(self):
+        base, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        with mock.patch.object(m.messagebox, "showinfo") as info, \
+                mock.patch.object(m.webbrowser, "open") as browser:
+            # ドライブ名つきはスキームとして扱われ、何も起きない
+            app.open_link(str(base / "outside.org"))
+            app.open_link((base / "outside.org").as_posix())
+            self.assertEqual(app.path, root / "README.org")
+            self.assertFalse(browser.called)
+            # 先頭が / のものは、root の外として断る
+            app.open_link("/outside.org")
+            app.open_link("//host/share/x.org")
+            self.assertEqual(app.path, root / "README.org")
+        self.assertEqual(self.refused(info) >= 1, True)
+
+    def test_only_text_documents_are_opened(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        with mock.patch.object(m.messagebox, "showinfo") as info, \
+                mock.patch.object(m.webbrowser, "open") as browser, \
+                mock.patch.object(m.os, "startfile", create=True) as startfile:
+            for href in ("img/a.png", "sub", "missing.org", "org"):
+                app.open_link(href)
+                self.assertEqual(app.path, root / "README.org", href)
+            self.assertEqual(self.refused(info), 4)
+            self.assertFalse(browser.called)
+            self.assertFalse(startfile.called)  # 外部のプログラムは起動しない
+        app.open_link("notes.txt")  # .txt は開ける
+        self.assertEqual(app.path, root / "notes.txt")
+
+    def test_large_files_are_refused(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        with mock.patch.object(m, "MAX_LINK_BYTES", 5), \
+                mock.patch.object(m.messagebox, "showinfo") as info:
+            app.open_link("org/core.org")
+        self.assertEqual(app.path, root / "README.org")
+        self.assertEqual(self.refused(info), 1)
+
+    def test_a_symlink_cannot_escape_the_root(self):
+        base, root = self.make_tree()
+        link = root / "escape.org"
+        try:
+            link.symlink_to(base / "outside.org")
+        except (OSError, NotImplementedError):
+            self.skipTest("シンボリックリンクを作れない環境")
+        app = self.app
+        app.open_path(root / "README.org")
+        with mock.patch.object(m.messagebox, "showinfo") as info:
+            app.open_link("escape.org")
+        self.assertEqual(app.path, root / "README.org")
+        self.assertEqual(self.refused(info), 1)
+
+    def test_an_unsaved_untitled_document_explains_instead_of_opening(self):
+        app = self.app
+        self.assertIsNone(app.path)
+        with mock.patch.object(m.messagebox, "showinfo") as info:
+            app.open_link("org/core.org")
+        self.assertEqual(self.refused(info), 1)
+        self.assertIn("保存", info.call_args.args[1])
+
+    def test_unsaved_changes_are_asked_about_before_leaving(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        app.ed.insert("end", "編集中")
+        pump(self.root, 200)
+        self.assertTrue(app.dirty)
+        with mock.patch.object(m.messagebox, "askyesnocancel",
+                               return_value=None) as ask:  # キャンセル
+            app.open_link("org/core.org")
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(app.path, root / "README.org")
+        self.assertIn("編集中", app.ed.get("1.0", "end-1c"))
+        with mock.patch.object(m.messagebox, "askyesnocancel",
+                               return_value=False):  # 保存しないで移動
+            app.open_link("org/core.org")
+        self.assertEqual(app.path, root / "org" / "core.org")
+
+    def test_failed_open_does_not_touch_history(self):
+        _, root = self.make_tree()
+        (root / "bad.org").write_bytes("日本語".encode("cp932"))
+        app = self.app
+        app.open_path(root / "README.org")
+        app.open_link("bad.org")  # UTF-8 ではない（showerror が呼ばれる）
+        self.assertIn("showerror", self.asked)
+        self.assertEqual(app.path, root / "README.org")
+        self.assertFalse(app.history)
+
+    def test_markdown_relative_links_open_too(self):
+        _, root = self.make_tree()
+        (root / "index.md").write_text("[空白](My%20Doc.md#x) [b](org/core.org?x=1)\n",
+                                       encoding="utf-8")
+        app = self.app
+        app.open_path(root / "index.md")
+        app.open_link("My%20Doc.md#x")  # %20 は戻し、# 以降は無視する
+        self.assertEqual(app.path, root / "My Doc.md")
+        app.go_back()
+        app.open_link("org/core.org?x=1")
+        self.assertEqual(app.path, root / "org" / "core.org")
+
+    def test_inert_hrefs_do_nothing(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        with mock.patch.object(m.messagebox, "showinfo") as info, \
+                mock.patch.object(m.webbrowser, "open") as browser:
+            for href in ("#", "", "javascript:alert(1)", "data:text/html,x",
+                         "vbscript:x", "C:\\Windows\\x"):
+                app.open_link(href)
+        self.assertEqual(app.path, root / "README.org")
+        self.assertFalse(browser.called)
+        self.assertEqual(self.refused(info), 0)
+
+    def test_new_and_explicit_open_clear_the_history(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        app.open_link("org/core.org")
+        self.assertTrue(app.history)
+        app.new()
+        self.assertFalse(app.history)
+        self.assertIsNone(app.link_root)
+
+    def test_back_shortcut(self):
+        _, root = self.make_tree()
+        app = self.app
+        app.open_path(root / "README.org")
+        app.open_link("org/core.org")
+        app.ed.focus_force()
+        self.root.update()
+        key = ("<Command-bracketleft>" if m.sys.platform == "darwin"
+               else "<Alt-Left>")
+        app.ed.event_generate(key)
+        self.root.update()
+        self.assertEqual(app.path, root / "README.org")
+
+    def test_save_as_makes_the_new_folder_the_root(self):
+        base, root = self.make_tree()
+        app = self.app
+        app.set_text("* 新規\n")
+        out = root / "org" / "saved.org"
+        with mock.patch.object(m.filedialog, "asksaveasfilename",
+                               return_value=str(out)):
+            app.save_as()
+        self.assertEqual(app.link_root, out.parent.resolve())
+
     # --- 描画の堅牢性と効率 ---------------------------------------
     def test_render_failure_restores_state_and_shows_notice(self):
         app = self.app

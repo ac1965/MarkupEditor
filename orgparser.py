@@ -7,6 +7,7 @@
   見出し（* の数が階層、TODO / DONE、行末の :tag:）、段落、
   *太字* /斜体/ _下線_ +取り消し+ =逐語= ~コード~、
   リンク [[URL][説明]] [[URL]]（画像の URL は画像で、代替テキストはファイル名）、素の http(s) URL、
+  file: のリンク（相対パスだけを href に残し、::検索指定も残す。開くかどうかはアプリ側が決める）、
   リスト（- + *、1. 1)、入れ子、[ ] [X] のチェックボックス）、
   #+BEGIN_SRC / #+BEGIN_EXAMPLE / #+BEGIN_QUOTE / #+BEGIN_COMMENT、
   表（|---+---| の区切り行）、水平線（-----）、#+TITLE:、行頭の # のコメント、
@@ -53,6 +54,25 @@ _HOLD = re.compile(r"\x00(\d+)\x00")
 _A = ' target="_blank" rel="noopener noreferrer"'
 
 
+def _href(url):
+    """リンク先（エスケープ済み）を、HTML に入れてよい形にする。
+
+    file: は外して、相対パスだけを残す（開くかどうかは、アプリ側が確かめる）。
+    絶対パス（/ ~ \\ ドライブ名）と、http / https / mailto / tel 以外の
+    スキーム（javascript: など）は、# にして無効にする。
+    Org の検索指定（パスのあとの ::）は、そのまま残す。
+    """
+    m = re.match(r"file:(.*)\Z", url, re.I)
+    rest = m.group(1) if m else url
+    if m and (rest.startswith(("/", "~", "\\")) or re.match(r"[A-Za-z]:", rest)):
+        return "#"
+    path, sep, search = rest.partition("::")
+    safe = safe_url(path)
+    if safe == "#" and path.strip() != "#":  # 危険なスキームだった
+        return "#"
+    return safe + sep + search
+
+
 def _file_name(url):
     """画像の URL（エスケープ済み）から、ファイル名だけを取り出す。
     file: と、:: 以降（検索の指定）と、? 以降（クエリ）を除き、最後の / のあとを使う。"""
@@ -82,15 +102,15 @@ def _inline(s, fn=None):
         s = _FNREF.sub(lambda m: hold("<sup>%d</sup>" % fn[m.group(1)])
                        if m.group(1) in fn else m.group(0), s)
     s = _LINK2.sub(lambda m: hold(
-        '<a href="' + safe_url(m.group(1)) + '"' + _A + ">"
+        '<a href="' + _href(m.group(1)) + '"' + _A + ">"
         + _marks(m.group(2)) + "</a>"), s)
 
     def link1(m):
         u = m.group(1)
         if _IMG.search(u):  # Org の画像には代替テキストが無いので、ファイル名を使う
-            return hold('<img alt="' + _file_name(u) + '" src="' + safe_url(u)
+            return hold('<img alt="' + _file_name(u) + '" src="' + _href(u)
                         + '">')
-        return hold('<a href="' + safe_url(u) + '"' + _A + ">" + u + "</a>")
+        return hold('<a href="' + _href(u) + '"' + _A + ">" + u + "</a>")
 
     s = _LINK1.sub(link1, s)
 

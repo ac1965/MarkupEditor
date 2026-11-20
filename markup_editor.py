@@ -9,6 +9,7 @@ Markdown / Org エディタ。左で書くと右のプレビューにすぐ反�
     python markup_editor.py [ファイル.md | ファイル.org]
 """
 import json
+import os
 import re
 import sys
 import time
@@ -18,6 +19,7 @@ import webbrowser
 from html.parser import HTMLParser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from urllib.parse import unquote
 
 from mdparser import export_html, md_to_html
 from orgparser import org_to_html
@@ -67,6 +69,26 @@ HEADING_SCALE = {1: 1.8, 2: 1.5, 3: 1.3, 4: 1.15, 5: 1.05, 6: 1.0}
 BULLETS = ["•", "◦", "▪"]
 # 入力が止まってから描き直すまでの間隔（ms）。描画に時間がかかる文書ほど長くする
 RENDER_MIN_MS, RENDER_MAX_MS = 120, 1500
+# リンクをクリックして開いてよいファイル（このエディタで編集できる文書だけ）と、その大きさの上限
+LINK_EXTENSIONS = (".org", ".md", ".markdown", ".txt")
+MAX_LINK_BYTES = 5_000_000
+
+
+def folder_of(path):
+    """文書のあるフォルダ（シンボリックリンクは解決する）。"""
+    try:
+        return Path(path).resolve().parent
+    except (OSError, RuntimeError):
+        return Path(path).absolute().parent
+
+
+def is_inside(path, root):
+    """path が root の下（root 自身も含む）にあるか。大文字小文字は OS の規則に従う。"""
+    try:
+        a, b = os.path.normcase(str(path)), os.path.normcase(str(root))
+        return os.path.commonpath([a, b]) == b
+    except ValueError:  # 別のドライブなど
+        return False
 
 
 class Renderer(HTMLParser):
@@ -333,6 +355,10 @@ class App:
         self.mod_label = "⌘" if sys.platform == "darwin" else "Ctrl+"
         self.path = None
         self.name = "無題.md"
+        # リンクで開いてよい範囲の根（利用者が自分で開いた文書のあるフォルダ）と、
+        # リンクをたどる前の文書（「戻る」用）
+        self.link_root = None
+        self.history = []
         self.dirty = False
         self.newline = "\n"
         self.bom = False
@@ -374,6 +400,7 @@ class App:
             self.name = draft.get("name") or self.name
             p = draft.get("path")
             self.path = Path(p) if p else None
+            self.link_root = folder_of(self.path) if self.path else None
             self.dirty = bool(draft.get("dirty"))
             self.refresh_title()
         else:
@@ -455,6 +482,8 @@ class App:
                 w.bind("<%s-%s>" % (m, key), lambda e, f=fn: (f(), "break")[1])
             # Tk 既定の Ctrl+O（行を開く）などより先に処理する
             w.bind("<%s-Shift-s>" % m, lambda e: (self.save_as(), "break")[1])
+            back = "<Command-bracketleft>" if m == "Command" else "<Alt-Left>"
+            w.bind(back, lambda e: (self.go_back(), "break")[1])
 
     def build_menu(self):
         mod = self.mod_label
@@ -463,6 +492,9 @@ class App:
         f.add_command(label="新規", accelerator=mod + "N", command=self.new)
         f.add_command(label="開く…", accelerator=mod + "O",
                       command=self.open_dialog)
+        f.add_command(label="リンク元に戻る", command=self.go_back,
+                      accelerator="⌘[" if sys.platform == "darwin" else "Alt+←")
+        self.back_index = f.index("end")
         f.add_command(label="保存", accelerator=mod + "S", command=self.save)
         f.add_command(label="名前を付けて保存…", accelerator=mod + "Shift+S",
                       command=self.save_as)
@@ -663,9 +695,127 @@ class App:
         return name
 
     def open_link(self, href):
-        # http / https / mailto / tel 以外（javascript: など）は開かない
+        """プレビューのリンクをクリックしたときの動作。
+
+        http / https / mailto / tel はブラウザなどで開く。スキームの無い相対パスは、
+        この文書からの場所として、エディタで開く（open_local_link）。
+        javascript: など、それ以外のスキームは何もしない。
+        """
         if re.match(r"(https?|mailto|tel):", href, re.I):
             webbrowser.open(href)
+        elif self.is_org() and href[:1] in ("#", "*") and len(href) > 1:
+            self.jump_to(href)  # Org の [[#ID]]、[[*見出し]]：この文書の中へ移動
+        elif (href and not href.startswith("#")
+              and not re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:(?!:)", href)):
+            self.open_local_link(href)
+
+    def split_link(self, href):
+        """リンク先を (パス, 検索指定) に分ける。
+        Org は :: より後ろが検索指定。Markdown は ? と # より後ろを無視する。"""
+        if self.is_org():
+            path, _, search = href.partition("::")
+            return path, search
+        return unquote(re.split(r"[?#]", href, maxsplit=1)[0]), ""
+
+    def open_local_link(self, href):
+        """相対パスのリンクを、このエディタで開く。
+
+        開くのは、利用者が自分で開いた文書のあるフォルダ（link_root）の下にある、
+        テキスト文書（LINK_EXTENSIONS）だけ。絶対パス、フォルダの外（.. やシンボリック
+        リンクで出る場合も含む）、フォルダ、大きすぎるファイル、ほかの形式は、理由を
+        伝えて開かない。外部のプログラムは起動しない。
+        """
+        def refuse(why):
+            messagebox.showinfo(APP, why)
+
+        if self.path is None:
+            refuse("このリンクを開くには、先に文書を保存してください。\n"
+                   "（リンクは、保存した文書のあるフォルダからの場所を指します）")
+            return
+        rel, search = self.split_link(href)
+        try:
+            here = self.path.resolve()
+            target = (self.path.parent / rel).resolve() if rel else here
+            root = (self.link_root or folder_of(self.path)).resolve()
+        except (OSError, ValueError, RuntimeError):
+            refuse("リンク先の場所を解決できませんでした:\n%s" % rel)
+            return
+        if not is_inside(target, root):
+            refuse("リンク先が、開いた文書のあるフォルダの外にあるため、開きません:\n%s"
+                   % rel)
+            return
+        if rel and target != here:
+            if not target.exists():
+                refuse("リンク先が見つかりません:\n%s" % rel)
+                return
+            if target.is_dir():
+                refuse("リンク先がフォルダのため、開けません:\n%s" % rel)
+                return
+            if target.suffix.lower() not in LINK_EXTENSIONS:
+                refuse("このエディタで開けない形式です（開けるのは %s）:\n%s"
+                       % (" ".join(LINK_EXTENSIONS), rel))
+                return
+            try:
+                too_big = target.stat().st_size > MAX_LINK_BYTES
+            except OSError:
+                too_big = False  # 読めなければ、open_path が理由を伝える
+            if too_big:
+                refuse("ファイルが大きすぎるため、開きません（%d MB まで）:\n%s"
+                       % (MAX_LINK_BYTES // 1000000, rel))
+                return
+            if not self.ok_discard():
+                return
+            before = self.path
+            self.open_path(target, from_link=True)
+            if self.path == before:  # 開けなかった（理由は open_path が伝えている）
+                return
+            self.history.append(before)
+            self.refresh_title()
+        self.jump_to(search)
+
+    def go_back(self):
+        """リンクをたどる前の文書に戻る。"""
+        if not self.history or not self.ok_discard():
+            return
+        self.open_path(self.history.pop(), from_link=True)
+        self.refresh_title()
+
+    def jump_to(self, search):
+        """検索指定の位置へ、エディタのカーソルとプレビューを動かす。
+
+        数字は行番号、* は見出し、# は :CUSTOM_ID:、それ以外は文字列の検索。
+        見つからなければ、状態表示に出すだけで、何も動かさない。
+        """
+        if not search:
+            return
+        lines = self.ed.get("1.0", "end-1c").split("\n")
+        found = None
+        if search.isdigit():
+            found = min(max(int(search), 1), len(lines))
+        elif search.startswith("*"):
+            want = search[1:].strip()
+            head = re.compile(r"^\*+\s+(?:(?:TODO|DONE)\s+)?(.*?)"
+                              r"(?:\s+:[\w@#%:]+:)?\s*$")
+            found = next((i for i, l in enumerate(lines, 1)
+                          if (m := head.match(l)) and m.group(1) == want), None)
+        elif search.startswith("#"):
+            prop = re.compile(r"^\s*:CUSTOM_ID:\s*%s\s*$" % re.escape(search[1:]))
+            at = next((i for i, l in enumerate(lines, 1) if prop.match(l)), None)
+            if at:  # ドロワーの直前の見出しへ
+                while at > 1 and not re.match(r"^\*+\s", lines[at - 1]):
+                    at -= 1
+                found = at
+        else:
+            found = next((i for i, l in enumerate(lines, 1) if search in l), None)
+        if found is None:
+            self.status.configure(text="見つかりませんでした: %s" % search)
+            return
+        self.ed.mark_set("insert", "%d.0" % found)
+        self.ed.see("%d.0" % found)
+        text = re.sub(r"^[\s*#:\-+]+", "", lines[found - 1]).strip()[:30]
+        at = self.pv.search(text, "1.0") if text else ""
+        if at:
+            self.pv.yview(at)
 
     # --- 描画 -----------------------------------------------------
     def on_modified(self, _event=None):
@@ -758,6 +908,8 @@ class App:
         # Org は編集だけ。HTML への書き出しは選べなくする
         self.file_menu.entryconfigure(
             self.export_index, state="disabled" if self.is_org() else "normal")
+        self.file_menu.entryconfigure(
+            self.back_index, state="normal" if self.history else "disabled")
 
     # --- ファイル操作 ---------------------------------------------
     def set_text(self, text):
@@ -785,6 +937,7 @@ class App:
         if not self.ok_discard():
             return
         self.path, self.name = None, "無題.md"
+        self.link_root, self.history = None, []
         self.newline, self.bom = "\n", False
         self.set_text("")
         self.render()
@@ -799,7 +952,10 @@ class App:
         if p:
             self.open_path(p)
 
-    def open_path(self, p):
+    def open_path(self, p, from_link=False):
+        """文書を開く。from_link は、リンクをたどって開いたとき（開いてよい範囲の根と
+        「戻る」の履歴を、そのままにする）。それ以外は、利用者が自分で開いたので、
+        その文書のあるフォルダを、リンクで開いてよい範囲の根にする。"""
         p = Path(p)
         try:
             raw = p.read_bytes()
@@ -815,6 +971,8 @@ class App:
         self.bom = raw.startswith(b"\xef\xbb\xbf")
         self.newline = "\r\n" if b"\r\n" in raw else "\n"
         self.path, self.name = p, p.name
+        if not from_link:
+            self.link_root, self.history = folder_of(p), []
         self.set_text(text.replace("\r\n", "\n").replace("\r", "\n"))
         self.render()
         self.schedule_save()
@@ -846,6 +1004,7 @@ class App:
         if not p:
             return False
         self.path, self.name = Path(p), Path(p).name
+        self.link_root = folder_of(self.path)  # 保存した場所が、リンクの根になる
         self.render()  # 拡張子で、Markdown と Org の解釈が変わる
         return self.save()
 

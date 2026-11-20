@@ -1,3 +1,4 @@
+import re
 import time
 import unittest
 
@@ -72,6 +73,64 @@ class Inline(unittest.TestCase):
 
     def test_code_marker_inside_url_query(self):
         self.assertNotIn("<code>", o("https://e.com/?a=1&b=2"))
+
+
+def href(text):
+    """text を変換して、最初の href か src の値を返す（無ければ None）。"""
+    m = re.search(r'(?:href|src)="([^"]*)"', o(text))
+    return m.group(1) if m else None
+
+
+class FileLinks(unittest.TestCase):
+    def test_relative_file_link_keeps_only_the_path(self):
+        self.assertEqual(href("[[file:org/core.org][a]]"), "org/core.org")
+        self.assertEqual(href("[[file:./x.org][a]]"), "./x.org")
+        self.assertEqual(href("[[file:../up.org][a]]"), "../up.org")
+        self.assertEqual(href("[[file:a.org]]"), "a.org")
+
+    def test_plain_relative_path_is_also_a_file_link(self):
+        self.assertEqual(href("[[./x.org][a]]"), "./x.org")
+        self.assertEqual(href("[[x.org][a]]"), "x.org")
+
+    def test_search_option_is_kept(self):
+        for link in ("org/personal.org::#personal-config", "a.org::*見出し",
+                     "a.org::12", "a.org::検索する文字"):
+            self.assertEqual(href("[[file:%s][x]]" % link), link)
+        # 拡張子のドットのせいで、スキームと間違えない（a.org: を scheme と見ない）
+        self.assertEqual(href("[[a.org::5][x]]"), "a.org::5")
+
+    def test_absolute_and_network_paths_are_neutralised(self):
+        for target in ("/etc/passwd", "~/secret", "C:/Windows/x", "c:\\x",
+                       "\\\\host\\share", "//host/x"):
+            self.assertEqual(href("[[file:%s][x]]" % target), "#", target)
+
+    def test_file_scheme_url_forms_are_neutralised(self):
+        self.assertEqual(href("[[file:///etc/passwd][x]]"), "#")
+        self.assertEqual(href("[[file://host/share][x]]"), "#")
+
+    def test_dangerous_schemes_stay_neutralised(self):
+        for target in ("javascript:alert(1)", "file:javascript:alert(1)",
+                       "JaVaScRiPt:x", "data:text/html,x", "vbscript:x"):
+            self.assertEqual(href("[[%s][x]]" % target), "#", target)
+
+    def test_search_part_cannot_smuggle_a_scheme(self):
+        self.assertEqual(href("[[javascript:alert(1)::x][a]]"), "#")
+
+    def test_web_and_internal_links_are_unchanged(self):
+        self.assertEqual(href("[[https://e.com/a?b=1][x]]"), "https://e.com/a?b=1")
+        self.assertEqual(href("[[mailto:a@b.co][x]]"), "mailto:a@b.co")
+        self.assertEqual(href("[[#custom-id][x]]"), "#custom-id")
+        self.assertEqual(href("[[*見出し][x]]"), "*見出し")
+
+    def test_attribute_injection_in_the_search_part_is_escaped(self):
+        h = o('[[file:a.org::*x"onclick="y][a]]')
+        self.assertNotIn('"onclick', h)
+        self.assertIn("&quot;onclick=&quot;", h)
+
+    def test_image_src_follows_the_same_rule(self):
+        self.assertEqual(href("[[file:svg/x.svg]]"), "svg/x.svg")
+        self.assertEqual(href("[[file:/abs/x.png]]"), "#")
+        self.assertEqual(href("[[file:C:/x.png]]"), "#")
 
 
 class ImageNames(unittest.TestCase):
