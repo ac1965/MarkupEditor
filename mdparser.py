@@ -28,18 +28,25 @@ def safe_url(u):
     return u
 
 
+# 強調の中身の最大長。閉じていない記号が多い長文で、探索が二乗に増えるのを防ぐ。
+# これより長い強調は強調にならず、記号がそのまま表示される。
+_EMPH_MAX = 500
+_ANY = r"[\s\S]{0,%d}?" % _EMPH_MAX
+_LINE = r"[^*\n]{0,%d}?" % _EMPH_MAX
+_LINE_U = r"[^_\n]{0,%d}?" % _EMPH_MAX
+
 _EMPH = [
-    (re.compile(r"\*\*\*(?=\S)([\s\S]*?\S)\*\*\*"),
+    (re.compile(r"\*\*\*(?=\S)(" + _ANY + r"\S)\*\*\*"),
      r"<strong><em>\1</em></strong>"),
-    (re.compile(r"(^|[^%s])___(?=\S)([\s\S]*?\S)___(?![%s])" % (_W, _W)),
+    (re.compile(r"(^|[^%s])___(?=\S)(%s\S)___(?![%s])" % (_W, _ANY, _W)),
      r"\1<strong><em>\2</em></strong>"),
-    (re.compile(r"\*\*(?=\S)([\s\S]*?\S)\*\*"), r"<strong>\1</strong>"),
-    (re.compile(r"(^|[^%s])__(?=\S)([\s\S]*?\S)__(?![%s])" % (_W, _W)),
+    (re.compile(r"\*\*(?=\S)(" + _ANY + r"\S)\*\*"), r"<strong>\1</strong>"),
+    (re.compile(r"(^|[^%s])__(?=\S)(%s\S)__(?![%s])" % (_W, _ANY, _W)),
      r"\1<strong>\2</strong>"),
-    (re.compile(r"\*(?=\S)([^*\n]*?\S)\*"), r"<em>\1</em>"),
-    (re.compile(r"(^|[^%s])_(?=\S)([^_\n]*?\S)_(?![%s])" % (_W, _W)),
+    (re.compile(r"\*(?=\S)(" + _LINE + r"\S)\*"), r"<em>\1</em>"),
+    (re.compile(r"(^|[^%s])_(?=\S)(%s\S)_(?![%s])" % (_W, _LINE_U, _W)),
      r"\1<em>\2</em>"),
-    (re.compile(r"(~{1,2})(?=[^\s~])([\s\S]*?[^\s~])\1(?!~)"),
+    (re.compile(r"(~{1,2})(?=[^\s~])(" + _ANY + r"[^\s~])\1(?!~)"),
      r"<del>\2</del>"),
 ]
 
@@ -74,7 +81,7 @@ _LINK = re.compile(r"\[([^\]]+)\]\(" + _URL + _TITLE + r"\)")
 _AUTOLINK = re.compile(
     r"(^|[\s(*_~])((?:https?://|www\.)[^\s<\u3000-\u9fff\uff00-\uffef]+)")
 _EMAIL = re.compile(
-    r"(^|[\s(*_~])([A-Za-z0-9._+\-]+@[A-Za-z0-9\-]+"
+    r"(^|[\s(*_~])([A-Za-z0-9._+\-]{1,64}@[A-Za-z0-9\-]+"  # ローカル部は 64 文字まで
     r"(?:\.[A-Za-z0-9\-]*[A-Za-z0-9])+)")
 _HOLD = re.compile(r"\x00(\d+)\x00")
 
@@ -122,7 +129,7 @@ def inline(s):
     s = _AUTOLINK.sub(auto, s)
     s = _EMAIL.sub(mail, s)
     s = _emph(s)
-    s = re.sub(r" {2,}\n", "<br>", s)
+    s = re.sub(r"(?<! ) {2,}\n", "<br>", s)  # 空白の列の先頭からだけ試す
     while _HOLD.search(s):
         s = _HOLD.sub(lambda m: stash[int(m.group(1))], s)
     return s

@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from mdparser import export_html, md_to_html
@@ -101,6 +102,26 @@ class Inline(unittest.TestCase):
     def test_code_span_not_autolinked(self):
         self.assertEqual(md_to_html("`https://e.com`"),
                          "<p><code>https://e.com</code></p>")
+
+
+class Limits(unittest.TestCase):
+    def test_emphasis_length_limit(self):
+        self.assertIn("<strong>", md_to_html("**" + "あ" * 500 + "**"))
+        self.assertNotIn("<strong>", md_to_html("**" + "あ" * 510 + "**"))
+
+    def test_unclosed_markers_stay_fast(self):
+        # 閉じていない記号が大量にあっても、時間が二乗で増えない
+        # （上限が無いと、この入力は数秒かかる）
+        for src in ("**a " * 16000, "~a " * 16000):
+            t0 = time.perf_counter()
+            md_to_html(src)
+            self.assertLess(time.perf_counter() - t0, 3.0)
+
+    def test_deep_nesting_raises_recursion_error_only(self):
+        # 深すぎる入れ子は RecursionError になる。呼び出し側（GUI）が受け止める
+        deep = "".join("  " * i + "- x\n" for i in range(3000))
+        with self.assertRaises(RecursionError):
+            md_to_html(deep)
 
 
 class Export(unittest.TestCase):

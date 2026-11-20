@@ -43,5 +43,8 @@ python md_editor.py [ファイル.md]
 ## テスト
 
 ```
-python -m unittest test_mdparser
+python -m unittest
 ```
+
+パーサーのテスト（`test_mdparser.py`）と GUI のテスト（`test_gui.py`）を実行する。
+GUI のテストは実際にウィンドウを開く。画面を開けない環境では、自動でスキップされる。

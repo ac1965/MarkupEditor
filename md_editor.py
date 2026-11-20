@@ -9,6 +9,7 @@ Markdown エディタ。左で書くと右のプレビューにすぐ反映さ�
 import json
 import re
 import sys
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -49,6 +50,8 @@ THEMES = {
 }
 HEADING_SCALE = {1: 1.8, 2: 1.5, 3: 1.3, 4: 1.15, 5: 1.05, 6: 1.0}
 BULLETS = ["•", "◦", "▪"]
+# 入力が止まってから描き直すまでの間隔（ms）。描画に時間がかかる文書ほど長くする
+RENDER_MIN_MS, RENDER_MAX_MS = 120, 1500
 
 
 class Renderer(HTMLParser):
@@ -284,6 +287,8 @@ class App:
         self.bom = False
         self.loading = False
         self.render_job = self.save_job = None
+        self.stale = False  # プレビューが非表示の間に、描き直しが必要になったか
+        self.last_render_ms = 0.0
         self.fonts = {}
         self.made_tags = set()
         self.link_tags = []
@@ -328,6 +333,7 @@ class App:
             return {}
 
     def write_state(self):
+        self.cancel_job(self.save_job)  # 直接呼ばれても、予約済みの保存を残さない
         self.save_job = None
         state = dict(theme=self.theme, size=self.size,
                      mode=self.mode_var.get())
@@ -344,8 +350,7 @@ class App:
             pass  # 保存できなくても編集は止めない
 
     def schedule_save(self):
-        if self.save_job:
-            self.root.after_cancel(self.save_job)
+        self.cancel_job(self.save_job)
         self.save_job = self.root.after(800, self.write_state)
 
     # --- UI -------------------------------------------------------
@@ -433,6 +438,8 @@ class App:
             self.paned.add(self.left, weight=1)
         if mode in ("split", "preview"):
             self.paned.add(self.right, weight=1)
+        if self.stale and self.preview_visible():
+            self.render()
         self.schedule_save()
 
     def set_theme(self):
@@ -526,9 +533,7 @@ class App:
             return
         self.dirty = True
         self.refresh_title()
-        if self.render_job:
-            self.root.after_cancel(self.render_job)
-        self.render_job = self.root.after(120, self.render)
+        self.schedule_render(self.render_delay())
         self.schedule_save()
 
     def on_resize(self, event):
@@ -536,29 +541,66 @@ class App:
         if event.width == self.pv_width:
             return
         self.pv_width = event.width
-        if self.render_job:
-            self.root.after_cancel(self.render_job)
-        self.render_job = self.root.after(150, self.render)
+        self.schedule_render(150)
 
-    def render(self):
-        self.render_job = None
-        text = self.ed.get("1.0", "end-1c")
-        pv = self.pv
-        top = pv.yview()[0]
-        pv.configure(state="normal")
-        pv.delete("1.0", "end")
-        for name in self.link_tags:
-            pv.tag_delete(name)
-        self.link_tags.clear()
-        r = Renderer(self)
-        r.feed(md_to_html(text))
-        r.close()
-        pv.configure(state="disabled")
-        pv.yview_moveto(top)
+    def preview_visible(self):
+        return self.mode_var.get() in ("split", "preview")
+
+    def render_delay(self):
+        return int(min(RENDER_MAX_MS,
+                       max(RENDER_MIN_MS, self.last_render_ms * 3)))
+
+    def schedule_render(self, delay):
+        self.cancel_job(self.render_job)
+        self.render_job = self.root.after(delay, self.render)
+
+    def update_status(self, text):
         body = re.sub(r"\s", "", text)
         self.status.configure(
             text="%d 行 / %d 文字（空白除く）" % (
                 text.count("\n") + 1 if text else 0, len(body)))
+
+    def render(self):
+        # 直接呼ばれたときに、予約済みの描き直しが残って二重に描かないようにする
+        self.cancel_job(self.render_job)
+        self.render_job = None
+        text = self.ed.get("1.0", "end-1c")
+        self.update_status(text)
+        if not self.preview_visible():
+            self.stale = True  # 表示に切り替えたときに描く
+            return
+        self.stale = False
+        start = time.perf_counter()
+        html, notice = "", None
+        try:
+            html = md_to_html(text)
+        except RecursionError:
+            notice = "入れ子が深すぎて、プレビューを描画できません。"
+        except Exception as e:  # 解析の失敗でエディタを止めない
+            notice = "プレビューを作れませんでした（%s）。" % type(e).__name__
+        pv = self.pv
+        top = pv.yview()[0]
+        pv.configure(state="normal")
+        try:
+            pv.delete("1.0", "end")
+            for name in self.link_tags:
+                pv.tag_delete(name)
+            self.link_tags.clear()
+            if not notice:
+                try:
+                    r = Renderer(self)
+                    r.feed(html)
+                    r.close()
+                except Exception as e:  # 描画の失敗でも状態は必ず戻す
+                    pv.delete("1.0", "end")
+                    notice = "プレビューの描画に失敗しました（%s）。" % \
+                        type(e).__name__
+            if notice:
+                pv.insert("end", notice, ("quote",))
+        finally:
+            pv.configure(state="disabled")
+        pv.yview_moveto(top)
+        self.last_render_ms = (time.perf_counter() - start) * 1000
 
     def refresh_title(self):
         self.root.title("%s%s — %s" % ("● " if self.dirty else "",
@@ -665,9 +707,22 @@ class App:
         except OSError as e:
             messagebox.showerror(APP, "書き出せませんでした:\n%s" % e)
 
+    def cancel_job(self, job):
+        if job:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:  # 破棄済みのウィンドウでも止められるように
+                pass
+
+    def cancel_jobs(self):
+        self.cancel_job(self.render_job)
+        self.cancel_job(self.save_job)
+        self.render_job = self.save_job = None
+
     def quit(self):
         if not self.ok_discard():
             return
+        self.cancel_jobs()
         self.write_state()
         self.root.destroy()
 
