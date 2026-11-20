@@ -1,4 +1,4 @@
-"""md_editor.py の GUI テスト。実際に tkinter のウィンドウを開いて確認する。
+"""markup_editor.py の GUI テスト。実際に tkinter のウィンドウを開いて確認する。
 
 画面を開けない環境（DISPLAY のない Linux など）では、全体をスキップする。
 ダイアログは差し替えるので、人の操作は要らない。
@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import md_editor as m
+import markup_editor as m
 
 
 def _has_display():
@@ -416,6 +416,34 @@ class GuiTest(unittest.TestCase):
     def test_state_write_failure_is_ignored(self):
         self.app.state_path = self.dir  # ディレクトリには書けない
         self.app.write_state()  # 例外にならないこと
+
+    def test_state_location_and_legacy_migration(self):
+        home = self.dir / "home"
+        old = home / ".md-editor" / "state.json"
+        new = home / ".markup-editor" / "state.json"
+        old.parent.mkdir(parents=True)
+        old.write_text('{"theme": "dark", "size": 14}', encoding="utf-8")
+        with mock.patch.object(m.Path, "home", return_value=home):
+            self.assertEqual(m.default_state_path(), new)
+            for w in self.root.winfo_children():
+                w.destroy()
+            app = m.App(self.root)  # state_path を渡さない = 実際の保存先
+            self.apps.append(app)
+            self.root.update()
+            # 新しい保存先がまだ無いので、旧名の保存先から引き継ぐ
+            self.assertEqual((app.theme, app.size), ("dark", 14))
+            self.assertFalse(new.exists())
+            app.write_state()
+            # 書くのは新しい保存先だけ。旧名のファイルは触らない
+            self.assertTrue(new.exists())
+            self.assertIn('"dark"', old.read_text(encoding="utf-8"))
+            # 新しい保存先ができたら、そちらを優先する
+            new.write_text('{"theme": "light", "size": 10}', encoding="utf-8")
+            for w in self.root.winfo_children():
+                w.destroy()
+            app2 = m.App(self.root)
+            self.apps.append(app2)
+            self.assertEqual((app2.theme, app2.size), ("light", 10))
 
 
 if __name__ == "__main__":

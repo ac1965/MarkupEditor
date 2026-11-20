@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`md_editor.py`、`mdparser.py`、`orgparser.py` を改修するエージェント向けの指示書。
+`markup_editor.py`、`mdparser.py`、`orgparser.py` を改修するエージェント向けの指示書。
 
 ## 目的
 
@@ -20,15 +20,17 @@ Windows / macOS / Linux のどれでも動く、Markdown と Org の閲覧・編
 |---|---|
 | `mdparser.py` | `md_to_html(src)`、`export_html(title, src)`。Markdown → HTML。`esc()` `safe_url()` `trim_url()` は Org も使う |
 | `orgparser.py` | `org_to_html(src)`。Org → HTML（部分対応）。出す HTML の形は `mdparser.py` に合わせる |
-| `md_editor.py` | tkinter のエディタ本体。`Renderer` が HTML を Text ウィジェットに描き、`App` が UI・ファイル操作・自動保存を持つ。`App.to_html()` が拡張子で Markdown と Org を切り替える |
+| `markup_editor.py` | tkinter のエディタ本体。`Renderer` が HTML を Text ウィジェットに描き、`App` が UI・ファイル操作・自動保存を持つ。`App.to_html()` が拡張子で Markdown と Org を切り替える |
 | `test_mdparser.py` | Markdown パーサーの単体テスト |
 | `test_orgparser.py` | Org パーサーの単体テスト |
 | `test_gui.py` | GUI のテスト（編集、ショートカット、保存、Org の切り替え、描画の堅牢性など） |
 
+- 名前の方針：アプリ名は「Markup Editor」。Markdown と Org の両方（今後増える軽量マークアップ形式も含む）を扱うので、特定の形式の名前は付けない。パーサーのファイルだけは、形式ごとに `mdparser.py`、`orgparser.py` のように付ける。
 - ファイルは UTF-8 だけを扱い、BOM と改行コード（LF / CRLF）は開いたファイルのとおりに保存する。
-- 下書き・テーマ・表示モード・プレビューのフォントは `~/.md-editor/state.json` に保存する。書き込みに失敗しても例外で止めない。
+- 下書き・テーマ・表示モード・プレビューのフォントは `~/.markup-editor/state.json` に保存する（`default_state_path()`）。書き込みに失敗しても例外で止めない。
+- 旧名（MD Editor）の `~/.md-editor/state.json`（`legacy_state_path()`）は、新しい保存先がまだ無いときの読み込みにだけ使う。書き込みはしない。引き継ぎが不要になったら、この処理は削除してよい。
 - プレビューのフォント名は、その PC で使えるものだけを受け付ける。保存された名前がその PC に無ければ無視して標準に戻す（別の PC の設定を引き継いでも壊れない）。
-- パーサーが新しい種類の HTML タグを出すようになったら、`Renderer`（`md_editor.py`）にも描き方を足す。足さないと、中の文字だけが出る。
+- パーサーが新しい種類の HTML タグを出すようになったら、`Renderer`（`markup_editor.py`）にも描き方を足す。足さないと、中の文字だけが出る。
 
 ## 検証手順（変更後に必ず実行）
 
@@ -37,7 +39,7 @@ python -m unittest
 ```
 
 - 全件成功すること。`test_mdparser.py` と `test_orgparser.py` がパーサー、`test_gui.py` が GUI（実際にウィンドウを開く。ダイアログは差し替えるので操作は要らない）。
-- 画面を開けない環境では、`test_gui.py` は自動でスキップされる。その場合は、GUI を変更したら `python md_editor.py` を実際に起動して確認する。
+- 画面を開けない環境では、`test_gui.py` は自動でスキップされる。その場合は、GUI を変更したら `python markup_editor.py` を実際に起動して確認する。
 - パーサーの挙動を変えたら、対応する `test_mdparser.py` か `test_orgparser.py` に、GUI の挙動を変えたら `test_gui.py` にケースを足す。
 - 正規表現を足したり変えたりしたら、「閉じていない記号を大量に並べた入力」で処理時間が二乗に増えないことを確かめる（`Limits` のテストに足す）。
 - 見た目（配色、表の列、余白など）はテストで確かめられない。変えたら起動して目で見る。

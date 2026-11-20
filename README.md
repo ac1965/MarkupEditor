@@ -1,19 +1,23 @@
-# MD Editor
+# Markup Editor
 
 Python の標準ライブラリ（tkinter）だけで動く、Markdown / Org エディタ。Windows / macOS / Linux で使える。
 左で書くと、右のプレビューにすぐ反映される。
 
 ```
-python md_editor.py [ファイル.md | ファイル.org]
+python markup_editor.py [ファイル.md | ファイル.org]
 ```
 
 ## 画面
 
 左のエディタで書くと、右のプレビューにすぐ反映される。見出し・強調・リスト・引用・表・コードブロックを描き分ける。
 
-| ライト | ダーク |
+| ライト（Markdown） | ダーク（Markdown） |
 |---|---|
 | ![ライトテーマ](docs/screenshot-light.png) | ![ダークテーマ](docs/screenshot-dark.png) |
+
+Org ファイル（`.org`）も、同じ画面で編集できる。
+
+![Org ファイルの表示](docs/screenshot-org.png)
 
 ## 要件
 
@@ -32,7 +36,7 @@ python md_editor.py [ファイル.md | ファイル.org]
 
 - 表示メニューで、分割 / エディタのみ / プレビューのみ、ライト / ダークを切り替える。
 - 表示メニューの「プレビューのフォント…」で、プレビュー本文のフォントを選べる（名前で絞り込み、選ぶとすぐ反映、「標準に戻す」あり）。コードは等幅のまま変わらない。
-- 下書き・テーマ・表示モード・フォントは `~/.md-editor/state.json` に保存される。
+- 下書き・テーマ・表示モード・フォントは `~/.markup-editor/state.json` に保存される。旧名（MD Editor）の `~/.md-editor/state.json` が残っていて、新しい保存先がまだ無いときは、そこから引き継ぐ（旧ファイルは変更しない）。
 - ファイルは UTF-8 だけを扱う。BOM と改行コード（LF / CRLF）は、開いたファイルのとおりに保存する。
 
 ## Markdown と Org

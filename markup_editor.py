@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""MD Editor (Python / tkinter 版)。
+"""Markup Editor (Python / tkinter 版)。
 
 Windows / macOS / Linux で、Python 3.8 以上の標準ライブラリだけで動く
 Markdown / Org エディタ。左で書くと右のプレビューにすぐ反映される。
 ファイル名が .org なら Org として、それ以外は Markdown として解釈する
 （Org は編集だけで、HTML への書き出しは Markdown のみ）。
 
-    python md_editor.py [ファイル.md | ファイル.org]
+    python markup_editor.py [ファイル.md | ファイル.org]
 """
 import json
 import re
@@ -22,8 +22,20 @@ from tkinter import filedialog, messagebox, ttk
 from mdparser import export_html, md_to_html
 from orgparser import org_to_html
 
-APP = "MD Editor"
-SAMPLE = """# MD Editor
+APP = "Markup Editor"
+
+
+def default_state_path():
+    """下書き・テーマなどの保存先。どの OS でも、ホームの下の同じ相対パス。"""
+    return Path.home() / ".markup-editor" / "state.json"
+
+
+def legacy_state_path():
+    """旧名（MD Editor）の保存先。引き継ぎの読み込みだけに使う。"""
+    return Path.home() / ".md-editor" / "state.json"
+
+
+SAMPLE = """# Markup Editor
 
 左で書くと右にすぐ反映されます。
 
@@ -296,8 +308,10 @@ class Renderer(HTMLParser):
 class App:
     def __init__(self, root, path=None, state_path=None):
         self.root = root
-        self.state_path = Path(state_path) if state_path else (
-            Path.home() / ".md-editor" / "state.json")
+        self.state_path = Path(state_path) if state_path else \
+            default_state_path()
+        # 旧名（MD Editor）の保存先。新しい保存先がまだ無いときだけ、読み込みに使う
+        self.legacy_state_path = None if state_path else legacy_state_path()
         self.mod = "Command" if sys.platform == "darwin" else "Control"
         self.mod_label = "⌘" if sys.platform == "darwin" else "Ctrl+"
         self.path = None
@@ -352,8 +366,11 @@ class App:
 
     # --- 状態の保存 -----------------------------------------------
     def read_state(self):
+        path = self.state_path
+        if not path.exists() and self.legacy_state_path:
+            path = self.legacy_state_path  # 書くのは常に新しい保存先
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
 
