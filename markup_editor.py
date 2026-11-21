@@ -563,6 +563,13 @@ class App:
         self.pv.configure(bg=t["bg"], fg=t["fg"], selectbackground=t["sel"],
                           selectforeground=t["fg"])
         self.status.configure(background=t["panel"], foreground=t["muted"])
+        # macOS の Tk 8.5 は、ダーク設定のとき widget の fg を無視して文字を白く描くので、
+        # 色をタグでも全文に指定する（他のタグより優先度を下げておく）
+        for w in (self.ed, self.pv):
+            w.tag_configure("base", foreground=t["fg"], background=t["bg"])
+            w.tag_lower("base")
+        self.ed.tag_add("base", "1.0", "end")
+        self.pv.tag_add("base", "1.0", "end")
         pv = self.pv
         pv.tag_configure("strike", overstrike=True)
         pv.tag_configure("sup", offset=4)
@@ -828,6 +835,7 @@ class App:
         self.ed.edit_modified(False)
         if self.loading:
             return
+        self.ed.tag_add("base", "1.0", "end")
         self.dirty = True
         self.refresh_title()
         self.schedule_render(self.render_delay())
@@ -901,6 +909,7 @@ class App:
                         type(e).__name__
             if notice:
                 pv.insert("end", notice, ("quote",))
+            pv.tag_add("base", "1.0", "end")
         finally:
             pv.configure(state="disabled")
         pv.yview_moveto(top)
@@ -920,6 +929,7 @@ class App:
         self.loading = True
         self.ed.delete("1.0", "end")
         self.ed.insert("1.0", text)
+        self.ed.tag_add("base", "1.0", "end")
         self.ed.edit_reset()
         self.ed.edit_modified(False)
         self.loading = False
@@ -951,7 +961,7 @@ class App:
         if not self.ok_discard():
             return
         p = filedialog.askopenfilename(
-            filetypes=[("Markdown / Org", "*.md *.markdown *.org *.txt"),
+            filetypes=[("Markdown / Org", ("*.md", "*.markdown", "*.org", "*.txt")),
                        ("すべてのファイル", "*")])
         if p:
             self.open_path(p)
