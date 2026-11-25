@@ -572,6 +572,64 @@ class GuiTest(unittest.TestCase):
         self.root.update()
         self.assertEqual(app.path, root / "README.org")
 
+    def test_space_pages_the_preview(self):
+        app = self.app
+        app.set_text("\n".join("行 %d" % i for i in range(300)))
+        app.mode_var.set("preview")
+        app.set_mode()
+        app.render()
+        self.root.update()
+        app.pv.focus_force()
+        self.root.update()
+        app.pv.yview_moveto(0)
+        app.pv.event_generate("<space>")
+        self.root.update()
+        first = app.pv.yview()[0]
+        self.assertGreater(first, 0)
+        app.pv.event_generate("<space>")
+        self.root.update()
+        second = app.pv.yview()[0]
+        self.assertGreater(second, first)
+        app.pv.event_generate("<Control-space>")
+        self.root.update()
+        self.assertAlmostEqual(app.pv.yview()[0], first, places=3)
+
+    def test_edit_helpers(self):
+        app = self.app
+        ed = app.ed
+        app.set_text("語")
+        ed.tag_add("sel", "1.0", "1.1")
+        app.make_bold()
+        self.assertEqual(ed.get("1.0", "end-1c"), "**語**")
+        app.set_text("語")
+        ed.tag_add("sel", "1.0", "1.1")
+        app.make_link()
+        self.assertEqual(ed.get("1.0", "end-1c"), "[語]()")
+        app.set_text("本文")
+        ed.mark_set("insert", "1.0")
+        app.shift_heading(1)
+        self.assertEqual(ed.get("1.0", "end-1c"), "# 本文")
+        app.shift_heading(1)
+        self.assertEqual(ed.get("1.0", "end-1c"), "## 本文")
+        app.shift_heading(-1)
+        app.shift_heading(-1)
+        self.assertEqual(ed.get("1.0", "end-1c"), "本文")
+        app.duplicate_line()
+        self.assertEqual(ed.get("1.0", "end-1c"), "本文\n本文")
+        app.delete_line()
+        self.assertEqual(ed.get("1.0", "end-1c"), "本文")
+        app.mode_var.set("split")
+        app.cycle_mode()
+        self.assertEqual(app.mode_var.get(), "editor")
+
+    def test_space_in_editor_still_types(self):
+        app = self.app
+        app.ed.focus_force()
+        self.root.update()
+        app.ed.event_generate("<space>")
+        self.root.update()
+        self.assertEqual(app.pv.yview()[0], 0)
+
     def test_save_as_makes_the_new_folder_the_root(self):
         base, root = self.make_tree()
         app = self.app

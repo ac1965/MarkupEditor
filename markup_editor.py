@@ -488,6 +488,114 @@ class App:
             w.bind("<%s-Shift-s>" % m, lambda e: (self.save_as(), "break")[1])
             back = "<Command-bracketleft>" if m == "Command" else "<Alt-Left>"
             w.bind(back, lambda e: (self.go_back(), "break")[1])
+        # プレビューでは SPACE で 1 ページ進み、Ctrl+SPACE で 1 ページ戻る。
+        # 編集中は SPACE が文字入力なので、プレビューにフォーカスがあるときだけ。
+        # Control は macOS でも Control キー（⌘ ではない）。
+        self.pv.bind("<space>", lambda e: (self.page(1), "break")[1])
+        self.pv.bind("<Control-space>", lambda e: (self.page(-1), "break")[1])
+        # state=disabled の Text はクリックでフォーカスが移らないので、明示する
+        self.pv.bind("<Button-1>", lambda e: self.pv.focus_set(), add="+")
+        self.bind_edit_keys()
+
+    # --- 編集用ショートカット ------------------------------------
+    def bind_edit_keys(self):
+        """エディタだけに効く書式・行操作のショートカットを割り当てる。"""
+        m, ed = self.mod, self.ed
+        keys = {
+            "b": self.make_bold, "i": self.make_italic,
+            "k": self.make_link, "grave": self.make_code,
+            "backslash": self.cycle_mode,
+            "braceright": lambda: self.shift_heading(1),
+            "braceleft": lambda: self.shift_heading(-1),
+            "D": self.duplicate_line, "K": self.delete_line,
+        }
+        for key, fn in keys.items():
+            ed.bind("<%s-%s>" % (m, key),
+                    lambda e, f=fn: (f(), "break")[1])
+
+    def wrap_selection(self, left, right=None):
+        """選択範囲を left…right で囲む。選択が無ければ対を入れて間にカーソルを置く。"""
+        right = left if right is None else right
+        ed = self.ed
+        ed.edit_separator()
+        if ed.tag_ranges("sel"):
+            a, b = ed.index("sel.first"), ed.index("sel.last")
+            ed.insert(b, right)
+            ed.insert(a, left)
+            ed.mark_set("insert", "%s+%dc" % (b, len(left) + len(right)))
+        else:
+            ed.insert("insert", left + right)
+            ed.mark_set("insert", "insert-%dc" % len(right))
+        ed.edit_separator()
+
+    def make_bold(self):
+        self.wrap_selection("*" if self.is_org() else "**")
+
+    def make_italic(self):
+        self.wrap_selection("/" if self.is_org() else "*")
+
+    def make_code(self):
+        self.wrap_selection("~" if self.is_org() else "`")
+
+    def make_link(self):
+        """選択範囲を、Markdown は [文字](URL)、Org は [[URL][文字]] にする。"""
+        ed = self.ed
+        text = ed.get("sel.first", "sel.last") if ed.tag_ranges("sel") else ""
+        if text:
+            ed.edit_separator()
+            ed.delete("sel.first", "sel.last")
+        else:
+            ed.edit_separator()
+        if self.is_org():
+            ed.insert("insert", "[[][%s]]" % text)
+            ed.mark_set("insert", "insert-%dc" % (len(text) + 3))
+        else:
+            ed.insert("insert", "[%s]()" % text)
+            ed.mark_set("insert", "insert-1c")
+        ed.edit_separator()
+
+    def shift_heading(self, d):
+        """現在行の見出しの階層を d（1 = 深く、-1 = 浅く）動かす。1〜6 階層。"""
+        ed = self.ed
+        ch = "*" if self.is_org() else "#"
+        start = ed.index("insert linestart")
+        line = ed.get(start, "insert lineend")
+        n = len(line) - len(line.lstrip(ch))
+        if n and not line[n:n + 1] in (" ", ""):
+            n = 0  # 「#タグ」など、見出しではない
+        ed.edit_separator()
+        if d > 0 and n < 6:
+            if n:
+                ed.insert(start, ch)
+            else:
+                ed.insert(start, ch + " ")
+        elif d < 0 and n:
+            cut = 2 if n == 1 and line[1:2] == " " else 1
+            ed.delete(start, "%s+%dc" % (start, cut))
+        ed.edit_separator()
+
+    def duplicate_line(self):
+        ed = self.ed
+        line = ed.get("insert linestart", "insert lineend")
+        ed.edit_separator()
+        ed.insert("insert lineend", "\n" + line)
+        ed.edit_separator()
+
+    def delete_line(self):
+        ed = self.ed
+        ed.edit_separator()
+        ed.delete("insert linestart", "insert lineend+1c")
+        ed.edit_separator()
+
+    def cycle_mode(self):
+        order = ["split", "editor", "preview"]
+        cur = self.mode_var.get()
+        self.mode_var.set(order[(order.index(cur) + 1) % 3])
+        self.set_mode()
+
+    def page(self, d):
+        """プレビューを d ページ分（1 = 前進、-1 = 後退）スクロールする。"""
+        self.pv.yview_scroll(d, "pages")
 
     def build_menu(self):
         mod = self.mod_label
@@ -537,6 +645,11 @@ class App:
             self.paned.add(self.left, weight=1)
         if mode in ("split", "preview"):
             self.paned.add(self.right, weight=1)
+        # プレビューのみのときは、SPACE でめくれるようフォーカスを移す
+        if mode == "preview":
+            self.pv.focus_set()
+        elif mode == "editor":
+            self.ed.focus_set()
         if self.stale and self.preview_visible():
             self.render()
         self.schedule_save()
